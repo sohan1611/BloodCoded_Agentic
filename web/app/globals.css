@@ -6,6 +6,10 @@
      content both read it, so the logo cannot drift out of line with the text below
      it -- which is precisely what happened while each carried its own number. */
   --app-gutter: 16px;
+  /* The header's own inset. Equal to the content gutter on a phone, where there is
+     no room to spare, and half of it from 768px up so the brand and the account chip
+     hang just outside the column of text below them. */
+  --header-gutter: var(--app-gutter);
   --shell: transparent;
   --shell-2: #e8edf7;
   --plate: #ffffff;
@@ -456,7 +460,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px var(--app-gutter);
+  padding: 10px var(--header-gutter);
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--topbar-border);
   backdrop-filter: blur(18px) saturate(150%);
@@ -1962,7 +1966,10 @@ code {
 }
 
 @media (min-width: 768px) {
-  :root { --app-gutter: 32px; }
+  :root {
+    --app-gutter: 32px;
+    --header-gutter: 16px;
+  }
 
   body {
     background: var(--body-bg);
@@ -1986,7 +1993,7 @@ code {
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 12px var(--app-gutter) 20px;
+    padding: 12px var(--header-gutter) 20px;
     background: transparent;
     border-bottom: 0;
     backdrop-filter: none;
@@ -1997,7 +2004,7 @@ code {
     display: block;
     min-width: auto;
   }
-  .cogniflow-logo { height: 44px; }
+  .cogniflow-logo { height: 52px; }
   .brand-copy { padding-right: 0; }
   .tagline,
   .engine-dot { display: none; }
@@ -2796,7 +2803,7 @@ code {
     padding: 0;
   }
   :root:not([data-theme="light"]) .topbar {
-    padding: 12px var(--app-gutter) 20px;
+    padding: 12px var(--header-gutter) 20px;
   }
   :root:not([data-theme="light"]) .plate {
     background: var(--plate);
@@ -2828,7 +2835,7 @@ code {
     padding: 0;
   }
   :root[data-theme="dark"] .topbar {
-    padding: 12px var(--app-gutter) 20px;
+    padding: 12px var(--header-gutter) 20px;
   }
   :root[data-theme="dark"] .plate {
     background: var(--plate);
