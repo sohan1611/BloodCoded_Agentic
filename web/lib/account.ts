@@ -92,28 +92,3 @@ export function validatePasswordChange(input: {
   if (input.confirm !== input.next) return "The new passwords do not match.";
   return null;
 }
-
-export type EditorTextSize = "default" | "large" | "larger";
-
-export const EDITOR_FONT_PX: Record<EditorTextSize, number> = {
-  default: 16,
-  large: 18,
-  larger: 20,
-};
-
-const DEFAULT_PREFERENCES: { editorTextSize: EditorTextSize } = {
-  editorTextSize: "default",
-};
-
-export function parsePreferences(raw: string | null): { editorTextSize: EditorTextSize } {
-  if (!raw) return { ...DEFAULT_PREFERENCES };
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PREFERENCES };
-    const editorTextSize = (parsed as { editorTextSize?: unknown }).editorTextSize;
-    if (editorTextSize === "default" || editorTextSize === "large" || editorTextSize === "larger") {
-      return { editorTextSize };
-    }
-  } catch {}
-  return { ...DEFAULT_PREFERENCES };
-}

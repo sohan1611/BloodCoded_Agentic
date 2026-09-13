@@ -23,7 +23,6 @@ import {
   LogOut,
   Notes,
   Shield,
-  Sliders,
   User,
 } from "./icons";
 import type { SettingsSection } from "./settings";
@@ -332,9 +331,6 @@ export function AccountHub({
       <div className="hub-group">
         <button type="button" className="hub-item" data-hub-item onClick={() => chooseSettings("profile")}>
           <User /><span>Profile</span>
-        </button>
-        <button type="button" className="hub-item" data-hub-item onClick={() => chooseSettings("preferences")}>
-          <Sliders /><span>Preferences</span>
         </button>
         <button type="button" className="hub-item" data-hub-item onClick={() => chooseSettings("security")}>
           <Shield /><span>Security</span>

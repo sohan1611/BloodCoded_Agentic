@@ -23,7 +23,7 @@ const editorDefaultKeymap = defaultKeymap.filter((binding) => binding.key !== "E
 
 export type CodeEditorHandle = { focus: () => void };
 
-function editorTheme(minHeight: number, fontSize: number) {
+function editorTheme(minHeight: number) {
   return EditorView.theme({
     "&": {
       width: "100%",
@@ -43,7 +43,7 @@ function editorTheme(minHeight: number, fontSize: number) {
       minHeight: `${minHeight}px`,
       overflow: "auto",
       fontFamily: "ui-monospace, Cascadia Code, Consolas, monospace",
-      fontSize: `${fontSize}px`,
+      fontSize: "16px",
       lineHeight: "1.55",
     },
     ".cm-content": {
@@ -82,7 +82,6 @@ export function CodeEditor({
   onChange,
   ariaLabel,
   minHeight = 220,
-  fontSize = 16,
   ref,
   invalid = false,
   describedBy,
@@ -91,7 +90,6 @@ export function CodeEditor({
   onChange: (next: string) => void;
   ariaLabel: string;
   minHeight?: number;
-  fontSize?: number;
   ref?: Ref<CodeEditorHandle>;
   invalid?: boolean;
   describedBy?: string;
@@ -133,7 +131,7 @@ export function CodeEditor({
             spellcheck: "false",
           }),
         ),
-        themed.of(editorTheme(minHeight, fontSize)),
+        themed.of(editorTheme(minHeight)),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           const cameFromProps = update.transactions.some((transaction) =>
@@ -182,9 +180,9 @@ export function CodeEditor({
 
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: themed.reconfigure(editorTheme(minHeight, fontSize)),
+      effects: themed.reconfigure(editorTheme(minHeight)),
     });
-  }, [fontSize, minHeight, themed]);
+  }, [minHeight, themed]);
 
   return (
     <div className="code-editor">

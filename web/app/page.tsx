@@ -54,8 +54,6 @@ import {
 } from "./plan";
 import { Shell, type Tab, useGlassSwap } from "./shell";
 import { authClient } from "@/lib/auth/client";
-import { EDITOR_FONT_PX } from "@/lib/account";
-import { usePreferences } from "@/lib/preferences";
 import { SettingsView, type SettingsSection } from "./settings";
 
 type Stage = "resuming" | "welcome" | "diagnostic" | "app";
@@ -236,7 +234,6 @@ export default function Page() {
 
   const { swap, sweeping } = useGlassSwap();
   const { data: accountSession, isPending: accountPending } = authClient.useSession();
-  const { editorTextSize } = usePreferences();
   const engine = useEngineStatus();
   const health = engine.health;
   const statusCopy = engineCopy(engine);
@@ -937,7 +934,6 @@ export default function Page() {
               ref={editorRef}
               invalid={submissionNotice !== null}
               describedBy={submissionNotice ? "submission-notice" : undefined}
-              fontSize={EDITOR_FONT_PX[editorTextSize]}
             />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={submitDiagnostic} disabled={actionBusy}>
@@ -1035,7 +1031,6 @@ export default function Page() {
               onRetryTurn={() => resumeTurn(false)}
               onCheckTurn={() => resumeTurn(true)}
               languages={languageOptions}
-              editorFontSize={EDITOR_FONT_PX[editorTextSize]}
             />
           )}
         </div>
@@ -1456,7 +1451,6 @@ function Learn({
   onRetryTurn,
   onCheckTurn,
   languages,
-  editorFontSize,
 }: {
   view: TutorView | null;
   code: string;
@@ -1472,7 +1466,6 @@ function Learn({
   onRetryTurn: () => void;
   onCheckTurn: () => void;
   languages: LanguageOption[];
-  editorFontSize: number;
 }) {
   if (!view) {
     return (
@@ -1576,7 +1569,6 @@ function Learn({
               ref={editorRef}
               invalid={submissionNotice !== null}
               describedBy={submissionNotice ? "submission-notice" : undefined}
-              fontSize={editorFontSize}
             />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={onSubmit} disabled={controlsBusy}>

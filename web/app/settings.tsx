@@ -15,17 +15,15 @@ import {
   safeImageUrl,
   validateName,
   validatePasswordChange,
-  type EditorTextSize,
 } from "@/lib/account";
 import { clearCachedJwt } from "@/lib/api";
 import { authClient } from "@/lib/auth/client";
-import { usePreferences } from "@/lib/preferences";
 import { useTheme, type ThemeChoice } from "@/lib/theme";
 import { PasswordField } from "./auth/auth-ui";
 import { Avatar, signOutThisDevice } from "./account-hub";
-import { Check, Palette, Shield, Sliders, User } from "./icons";
+import { Check, Palette, Shield, User } from "./icons";
 
-export type SettingsSection = "profile" | "preferences" | "appearance" | "security";
+export type SettingsSection = "profile" | "appearance" | "security";
 
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSection;
@@ -33,15 +31,8 @@ const SETTINGS_SECTIONS: Array<{
   icon: typeof User;
 }> = [
   { id: "profile", label: "Profile", icon: User },
-  { id: "preferences", label: "Preferences", icon: Sliders },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "security", label: "Security", icon: Shield },
-];
-
-const TEXT_SIZE_OPTIONS: Array<{ value: EditorTextSize; label: string }> = [
-  { value: "default", label: "Default" },
-  { value: "large", label: "Large" },
-  { value: "larger", label: "Larger" },
 ];
 
 const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string }> = [
@@ -129,7 +120,6 @@ export function SettingsView({
 
         <div className="settings-content">
           {section === "profile" && <ProfileSettings />}
-          {section === "preferences" && <PreferenceSettings />}
           {section === "appearance" && <AppearanceSettings />}
           {section === "security" && <SecuritySettings />}
         </div>
@@ -259,43 +249,6 @@ function ProfileSettings() {
       <div className="settings-control settings-static-row">
         <span>Member since</span>
         <strong>{memberSince}</strong>
-      </div>
-    </section>
-  );
-}
-
-function PreferenceSettings() {
-  const { editorTextSize, setEditorTextSize } = usePreferences();
-  const refs = useRef<Array<HTMLButtonElement | null>>([]);
-  const values = TEXT_SIZE_OPTIONS.map((option) => option.value);
-
-  return (
-    <section className="settings-section" aria-labelledby="settings-preferences-title">
-      <div className="settings-section-intro">
-        <h2 id="settings-preferences-title">Preferences</h2>
-        <p>Adjust how your learning workspace feels on this device.</p>
-      </div>
-      <div className="settings-control">
-        <h3 id="editor-size-label">Code editor text size</h3>
-        <div className="settings-segments" role="radiogroup" aria-labelledby="editor-size-label">
-          {TEXT_SIZE_OPTIONS.map((option, index) => (
-            <button
-              key={option.value}
-              ref={(node) => {
-                refs.current[index] = node;
-              }}
-              type="button"
-              role="radio"
-              aria-checked={editorTextSize === option.value}
-              tabIndex={editorTextSize === option.value ? 0 : -1}
-              onClick={() => setEditorTextSize(option.value)}
-              onKeyDown={(event) => moveRadio(event, index, values, refs, setEditorTextSize)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        <p className="settings-helper">Applies to exercise and quick-check editors. Saved on this device.</p>
       </div>
     </section>
   );

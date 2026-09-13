@@ -2,10 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  EDITOR_FONT_PX,
   deviceLabel,
   initialsFor,
-  parsePreferences,
   providerLabel,
   relativeTime,
   safeImageUrl,
@@ -100,19 +98,4 @@ test("validatePasswordChange reports each invalid branch and accepts valid input
   assert.equal(validatePasswordChange({ current: "samepassword", next: "samepassword", confirm: "samepassword" }), "Choose a password different from your current password.");
   assert.equal(validatePasswordChange({ current: "oldpassword", next: "newpassword", confirm: "different" }), "The new passwords do not match.");
   assert.equal(validatePasswordChange({ current: "oldpassword", next: "newpassword", confirm: "newpassword" }), null);
-});
-
-test("parsePreferences accepts known values and safely defaults every junk branch", () => {
-  assert.deepEqual(parsePreferences(JSON.stringify({ editorTextSize: "default" })), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences(JSON.stringify({ editorTextSize: "large" })), { editorTextSize: "large" });
-  assert.deepEqual(parsePreferences(JSON.stringify({ editorTextSize: "larger" })), { editorTextSize: "larger" });
-  assert.deepEqual(parsePreferences(null), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences(""), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences("{"), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences("null"), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences("[]"), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences("42"), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences('"large"'), { editorTextSize: "default" });
-  assert.deepEqual(parsePreferences(JSON.stringify({ editorTextSize: "huge" })), { editorTextSize: "default" });
-  assert.deepEqual(EDITOR_FONT_PX, { default: 16, large: 18, larger: 20 });
 });

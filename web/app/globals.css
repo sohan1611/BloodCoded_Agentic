@@ -3426,35 +3426,6 @@ code {
 }
 .settings-static-row strong { text-align: right; }
 
-.settings-segments {
-  width: fit-content;
-  max-width: 100%;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
-  padding: 4px;
-  border: 1px solid var(--sheet-control-border);
-  border-radius: var(--r-sm);
-  background: var(--surface-soft);
-}
-.settings-segments button {
-  min-width: 82px;
-  min-height: 38px;
-  padding: 7px 11px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.settings-segments button[aria-checked="true"] {
-  background: var(--chrome-active);
-  color: var(--ink);
-}
-
 .appearance-options {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3481,8 +3452,7 @@ code {
   border: 2px solid var(--focus);
   padding: 13px;
 }
-.appearance-options button:focus-visible,
-.settings-segments button:focus-visible {
+.appearance-options button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
