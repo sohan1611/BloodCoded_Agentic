@@ -2,6 +2,10 @@
    preference or an explicit data-theme="dark" stamp. */
 
 :root {
+  /* The single left/right inset for the whole app. The header brand and the page
+     content both read it, so the logo cannot drift out of line with the text below
+     it -- which is precisely what happened while each carried its own number. */
+  --app-gutter: 16px;
   --shell: transparent;
   --shell-2: #e8edf7;
   --plate: #ffffff;
@@ -452,7 +456,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 16px;
+  padding: 10px var(--app-gutter);
   background: var(--topbar-bg);
   border-bottom: 1px solid var(--topbar-border);
   backdrop-filter: blur(18px) saturate(150%);
@@ -560,7 +564,7 @@ textarea:focus-visible {
   min-height: calc(100dvh - 64px);
   background: transparent;
   border-radius: 0;
-  padding: 16px 16px calc(64px + env(safe-area-inset-bottom) + 16px);
+  padding: 16px var(--app-gutter) calc(64px + env(safe-area-inset-bottom) + 16px);
 }
 
 .view-region {
@@ -1958,6 +1962,8 @@ code {
 }
 
 @media (min-width: 768px) {
+  :root { --app-gutter: 32px; }
+
   body {
     background: var(--body-bg);
     color: var(--ink);
@@ -1980,7 +1986,7 @@ code {
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 12px 18px 20px 0;
+    padding: 12px var(--app-gutter) 20px;
     background: transparent;
     border-bottom: 0;
     backdrop-filter: none;
@@ -2065,7 +2071,7 @@ code {
   .plate {
     background: var(--plate);
     border-radius: 22px;
-    padding: 30px 32px 36px;
+    padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
   }
 
@@ -2790,12 +2796,12 @@ code {
     padding: 0;
   }
   :root:not([data-theme="light"]) .topbar {
-    padding: 12px 18px 20px 0;
+    padding: 12px var(--app-gutter) 20px;
   }
   :root:not([data-theme="light"]) .plate {
     background: var(--plate);
     border-radius: 22px;
-    padding: 30px 32px 36px;
+    padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
   }
   :root:not([data-theme="light"]) .nav {
@@ -2822,12 +2828,12 @@ code {
     padding: 0;
   }
   :root[data-theme="dark"] .topbar {
-    padding: 12px 18px 20px 0;
+    padding: 12px var(--app-gutter) 20px;
   }
   :root[data-theme="dark"] .plate {
     background: var(--plate);
     border-radius: 22px;
-    padding: 30px 32px 36px;
+    padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
   }
   :root[data-theme="dark"] .nav {
