@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.models.enums import StudentOutcome
@@ -65,6 +66,253 @@ class Pattern:
     stdout_patterns: tuple[str, ...] = ()
     code_patterns: tuple[str, ...] = ()
     outcomes: tuple[StudentOutcome, ...] = ()
+    code_check: Callable[[str], bool] | None = None
+    """A deterministic predicate over the SUBMITTED source, via `ast`.
+
+    Unlike draft facts, this is evidence about a completed program whose observed
+    outcome can affect mastery. A predicate must therefore fail closed when the source
+    cannot be analysed.
+    """
+
+
+_LOOP_NODES = (ast.For, ast.AsyncFor, ast.While)
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _is_accumulator_constant(node: ast.AST) -> bool:
+    """Whether `node` is one of the constants that can seed an accumulator."""
+    return isinstance(node, ast.Constant) and (
+        isinstance(node.value, str)
+        or (isinstance(node.value, (int, float)) and not isinstance(node.value, bool))
+    )
+
+
+def _single_name_assignment(node: ast.AST) -> tuple[str, ast.AST] | None:
+    """Return the name and value for the exact assignment form used by both facts."""
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ):
+        return node.targets[0].id, node.value
+    return None
+
+
+def _loads_name(node: ast.AST, name: str) -> bool:
+    """Whether `node` contains a load of `name`."""
+    return any(
+        isinstance(child, ast.Name)
+        and child.id == name
+        and isinstance(child.ctx, ast.Load)
+        for child in ast.walk(node)
+    )
+
+
+def _is_self_update(node: ast.AST, name: str) -> bool:
+    """Whether `node` updates `name` using its previous value."""
+    if isinstance(node, ast.AugAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    assignment = _single_name_assignment(node)
+    return assignment is not None and assignment[0] == name and _loads_name(
+        assignment[1], name
+    )
+
+
+def _own_body_statements(
+    loop: ast.For | ast.AsyncFor | ast.While,
+) -> list[tuple[ast.stmt, tuple[ast.AST, ...]]]:
+    """Statements owned by `loop`, paired with tests of enclosing `if` blocks."""
+    found: list[tuple[ast.stmt, tuple[ast.AST, ...]]] = []
+
+    def descend(statements: list[ast.stmt], if_tests: tuple[ast.AST, ...]) -> None:
+        for statement in statements:
+            found.append((statement, if_tests))
+            if isinstance(statement, _LOOP_NODES + _SCOPE_NODES):
+                continue
+            if isinstance(statement, ast.If):
+                nested_tests = (*if_tests, statement.test)
+                descend(statement.body, nested_tests)
+                descend(statement.orelse, nested_tests)
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                descend(statement.body, if_tests)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                descend(statement.body, if_tests)
+                for handler in statement.handlers:
+                    descend(handler.body, if_tests)
+                descend(statement.orelse, if_tests)
+                descend(statement.finalbody, if_tests)
+            elif isinstance(statement, ast.Match):
+                for case in statement.cases:
+                    descend(case.body, if_tests)
+
+    descend(loop.body, ())
+    return found
+
+
+def _loops_with_scopes(
+    tree: ast.Module,
+) -> list[
+    tuple[
+        ast.For | ast.AsyncFor | ast.While,
+        ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+    ]
+]:
+    """Pair every loop with its innermost enclosing function, or the module."""
+    loops: list[
+        tuple[
+            ast.For | ast.AsyncFor | ast.While,
+            ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+        ]
+    ] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef = tree
+
+        def _visit_function(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        ) -> None:
+            previous = self.scope
+            self.scope = node
+            self.generic_visit(node)
+            self.scope = previous
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_function(node)
+
+        def _visit_loop(self, node: ast.For | ast.AsyncFor | ast.While) -> None:
+            loops.append((node, self.scope))
+            self.generic_visit(node)
+
+        def visit_For(self, node: ast.For) -> None:
+            self._visit_loop(node)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            self._visit_loop(node)
+
+        def visit_While(self, node: ast.While) -> None:
+            self._visit_loop(node)
+
+    Visitor().visit(tree)
+    return loops
+
+
+def _scope_nodes(
+    scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.AST]:
+    """Nodes in one lexical scope, excluding nested functions, lambdas and classes."""
+    nodes: list[ast.AST] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def generic_visit(self, node: ast.AST) -> None:
+            nodes.append(node)
+            super().generic_visit(node)
+
+    visitor = Visitor()
+    for statement in scope.body:
+        visitor.visit(statement)
+    return nodes
+
+
+def _read_after(
+    scope_nodes: list[ast.AST], loop: ast.For | ast.AsyncFor | ast.While, name: str
+) -> bool:
+    """Whether `name` is loaded in the loop's scope after the loop ends."""
+    end_lineno = loop.end_lineno if loop.end_lineno is not None else loop.lineno
+    return any(
+        isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, ast.Load)
+        and node.lineno > end_lineno
+        for node in scope_nodes
+    )
+
+
+def resets_accumulator_inside_loop(source: str) -> bool:
+    """Detect an accumulator reset before its self-update in one loop's own body."""
+    try:
+        tree = ast.parse(source)
+        for loop, scope in _loops_with_scopes(tree):
+            own_statements = _own_body_statements(loop)
+            scope_nodes = _scope_nodes(scope)
+            resets = [
+                (statement, assignment[0])
+                for statement, _ in own_statements
+                if (assignment := _single_name_assignment(statement)) is not None
+                and _is_accumulator_constant(assignment[1])
+            ]
+            for reset, name in resets:
+                if not _read_after(scope_nodes, loop, name):
+                    continue
+                if any(
+                    reset.lineno < statement.lineno
+                    and _is_self_update(statement, name)
+                    for statement, _ in own_statements
+                ):
+                    return True
+        return False
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+
+
+def overwrites_instead_of_accumulating(source: str) -> bool:
+    """Detect an accumulator seed followed by replacement on every loop pass."""
+    try:
+        tree = ast.parse(source)
+        for loop, scope in _loops_with_scopes(tree):
+            own_statements = _own_body_statements(loop)
+            scope_nodes = _scope_nodes(scope)
+            seeded_names = {
+                assignment[0]
+                for node in scope_nodes
+                if isinstance(node, ast.Assign)
+                and node.lineno < loop.lineno
+                and (assignment := _single_name_assignment(node)) is not None
+                and _is_accumulator_constant(assignment[1])
+            }
+            for name in seeded_names:
+                if not _read_after(scope_nodes, loop, name):
+                    continue
+                if any(
+                    _is_self_update(statement, name)
+                    for statement, _ in own_statements
+                ):
+                    continue
+                for statement, if_tests in own_statements:
+                    assignment = _single_name_assignment(statement)
+                    if (
+                        assignment is not None
+                        and assignment[0] == name
+                        and not _loads_name(assignment[1], name)
+                        and not any(_loads_name(test, name) for test in if_tests)
+                    ):
+                        return True
+        return False
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+
+
+def _check_safely(predicate: Callable[[str], bool], source: str) -> bool:
+    """Run a submitted-source predicate fail-closed on any exception."""
+    try:
+        return predicate(source)
+    except Exception:
+        return False
 
 
 PATTERNS: tuple[Pattern, ...] = (
@@ -127,6 +375,36 @@ PATTERNS: tuple[Pattern, ...] = (
         ),
         code_patterns=(r"def\s+\w+\([^)]*\):(?:(?!return).)*?print\(",),
         outcomes=(StudentOutcome.WRONG_ANSWER,),
+    ),
+    Pattern(
+        key="accumulator_reset_in_loop",
+        label="resets an accumulator inside the loop, discarding progress from earlier passes",
+        prerequisite_hint="variables",
+        student_note=(
+            "Your running value starts over during the loop, so progress from earlier passes "
+            "is lost. Where does a value that must survive every pass need to be created?"
+        ),
+        hints=(
+            "Trace the value that is meant to remember work from one pass to the next.",
+            "Where is that value created relative to the loop that needs to preserve it?",
+        ),
+        outcomes=(StudentOutcome.WRONG_ANSWER,),
+        code_check=resets_accumulator_inside_loop,
+    ),
+    Pattern(
+        key="overwrite_instead_of_accumulate",
+        label="replaces an accumulator on each loop pass instead of combining prior work",
+        prerequisite_hint="variables",
+        student_note=(
+            "Each pass replaces the value left by the previous one, so the result only "
+            "reflects the latest item. Does each pass add to what came before, or replace it?"
+        ),
+        hints=(
+            "Trace the value after two passes and compare it with the work done so far.",
+            "Does each pass build on the earlier value, or leave only the current item?",
+        ),
+        outcomes=(StudentOutcome.WRONG_ANSWER,),
+        code_check=overwrites_instead_of_accumulating,
     ),
     Pattern(
         key="infinite_loop",
@@ -254,6 +532,10 @@ def detect(
 
     for pattern in PATTERNS:
         if pattern.outcomes and outcome in pattern.outcomes:
+            if pattern.code_check is not None:
+                if _check_safely(pattern.code_check, body):
+                    return pattern
+                continue
             if not pattern.code_patterns:
                 return pattern
             if any(re.search(p, body, re.DOTALL) for p in pattern.code_patterns):

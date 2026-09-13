@@ -18,6 +18,54 @@ from app.mastery.misconceptions import PATTERNS, detect
 from app.models.enums import StudentOutcome
 
 
+RESET_FOR_CODE = """\
+total = 0
+for s in [1, 2, 3]:
+    total = 0
+    total += s
+print(total)
+"""
+
+RESET_WHILE_CODE = """\
+i = 0
+while i < 3:
+    total = 0
+    total += i
+    i += 1
+print(total)
+"""
+
+RESET_ASSIGN_CODE = """\
+total = 0
+for s in [1, 2, 3]:
+    total = 0
+    total = total + s
+print(total)
+"""
+
+OVERWRITE_FOR_CODE = """\
+total = 0
+for s in [1, 2, 3]:
+    total = s
+print(total)
+"""
+
+OVERWRITE_STRING_CODE = """\
+out = ""
+for w in ["red", "blue"]:
+    out = w
+print(out)
+"""
+
+POSITIVE_ACCUMULATOR_CASES = (
+    (RESET_FOR_CODE, "accumulator_reset_in_loop"),
+    (RESET_WHILE_CODE, "accumulator_reset_in_loop"),
+    (RESET_ASSIGN_CODE, "accumulator_reset_in_loop"),
+    (OVERWRITE_FOR_CODE, "overwrite_instead_of_accumulate"),
+    (OVERWRITE_STRING_CODE, "overwrite_instead_of_accumulate"),
+)
+
+
 def test_recursion_error_is_a_missing_base_case() -> None:
     found = detect(
         code="def f(n):\n    return n * f(n-1)",
@@ -70,6 +118,182 @@ def test_print_instead_of_return_is_detected_from_source() -> None:
     )
     assert found is not None
     assert found.prerequisite_hint == "functions"
+
+
+def test_reset_inside_for_loop_implicates_variables() -> None:
+    found = detect(
+        code=RESET_FOR_CODE,
+        stdout="3",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "accumulator_reset_in_loop"
+    assert found.prerequisite_hint == "variables"
+
+
+def test_reset_inside_while_loop_implicates_variables() -> None:
+    found = detect(
+        code=RESET_WHILE_CODE,
+        stdout="2",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "accumulator_reset_in_loop"
+    assert found.prerequisite_hint == "variables"
+
+
+def test_assignment_self_update_counts_as_accumulation() -> None:
+    found = detect(
+        code=RESET_ASSIGN_CODE,
+        stdout="3",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "accumulator_reset_in_loop"
+    assert found.prerequisite_hint == "variables"
+
+
+def test_overwrite_inside_for_loop_implicates_variables() -> None:
+    found = detect(
+        code=OVERWRITE_FOR_CODE,
+        stdout="3",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "overwrite_instead_of_accumulate"
+    assert found.prerequisite_hint == "variables"
+
+
+def test_overwritten_string_accumulator_implicates_variables() -> None:
+    found = detect(
+        code=OVERWRITE_STRING_CODE,
+        stdout="blue",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "overwrite_instead_of_accumulate"
+    assert found.prerequisite_hint == "variables"
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        pytest.param(
+            """\
+for row in grid:
+    row_total = 0
+    for v in row:
+        row_total += v
+    print(row_total)
+""",
+            id="per-row accumulator belongs to inner loop",
+        ),
+        pytest.param(
+            """\
+total = 0
+for value in values:
+    total += value
+print(total)
+""",
+            id="correct accumulator",
+        ),
+        pytest.param(
+            """\
+best = 0
+for x in xs:
+    if x > best:
+        best = x
+print(best)
+""",
+            id="guarded maximum",
+        ),
+        pytest.param(
+            """\
+last = None
+for x in xs:
+    last = x
+print(last)
+""",
+            id="None-seeded last item",
+        ),
+        pytest.param(
+            """\
+for x in xs:
+    total = 0
+    total += x
+print("done")
+""",
+            id="accumulator not read after loop",
+        ),
+        pytest.param(
+            "for x in xs:\n    print(x)\n",
+            id="no accumulator",
+        ),
+    ),
+)
+def test_non_accumulator_mistakes_do_not_match_new_patterns(code: str) -> None:
+    found = detect(
+        code=code,
+        stdout="",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is None
+
+
+@pytest.mark.parametrize("code, expected_key", POSITIVE_ACCUMULATOR_CASES)
+@pytest.mark.parametrize(
+    "outcome",
+    (StudentOutcome.CORRECT, StudentOutcome.STUDENT_SYNTAX_ERROR),
+)
+def test_accumulator_source_inference_requires_wrong_answer(
+    code: str, expected_key: str, outcome: StudentOutcome
+) -> None:
+    found = detect(code=code, stdout="", stderr="", outcome=outcome)
+    assert found is None, f"{expected_key} must not match {outcome.value}"
+
+
+def test_unparseable_wrong_answer_does_not_match_accumulator_patterns() -> None:
+    found = detect(
+        code="for value in values\n    total = value",
+        stdout="",
+        stderr="",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is None
+
+
+def test_name_error_outranks_accumulator_source_inference() -> None:
+    found = detect(
+        code=RESET_FOR_CODE,
+        stdout="",
+        stderr="NameError: name 's' is not defined",
+        outcome=StudentOutcome.WRONG_ANSWER,
+    )
+    assert found is not None
+    assert found.key == "name_error"
+
+
+def test_accumulator_attribution_uses_only_direct_prerequisites() -> None:
+    """The two-hop variables case is deliberately refused, not a missed case."""
+    from pathlib import Path
+
+    from app.mastery.attribution import debits
+    from app.mastery.skill_graph import SkillGraph
+
+    graph = SkillGraph.from_yaml(Path("app/config/skills.yaml"))
+    assert debits("loops", "variables", graph.prerequisites("loops")) == [
+        ("loops", 0.4),
+        ("variables", 0.6),
+    ]
+    assert debits(
+        "nested_loops", "variables", graph.prerequisites("nested_loops")
+    ) == [("nested_loops", 1.0)]
 
 
 def test_name_error_implicates_variables() -> None:
