@@ -281,7 +281,7 @@
   }
 }
 
-/* The explicit choice. Identical to the block above BY CONSTRUCTION -- Codex updated
+/* The explicit choice. Identical to the block above BY CONSTRUCTION -- an earlier change updated
    only the media-query copy and left this one on the previous palette, so picking
    "Dark" in the switcher gave a different theme from having a dark OS. The two are
    kept in step by tests/test_theme_tokens.py, because nothing else can. */

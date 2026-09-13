@@ -261,7 +261,6 @@ with gr.Blocks(title="CogniFlow", theme=gr.themes.Soft()) as demo:
         )
 
 
-# `demo` is imported by deploy/space/app.py, so the Space and local runs share one
-# implementation rather than drifting apart.
+# Run this view directly with `python app_gradio.py`.
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))

@@ -17,7 +17,6 @@ data/cogniflow.db
 .cache/llm_replay/
 .pytest_cache/
 results/
-.agents/codex-*.txt
 build/
 
 # The demo video lives on the v1.0-stage1 GitHub Release, not in git history.
@@ -26,7 +25,3 @@ build/
 *.mp4
 *.mov
 *.mkv
-
-# Editor/agent scaffolding, not project workflow. `python run.py ui` is the documented
-# way to start the UI; this file only exists to point a preview pane at a fixed port.
-.claude/

@@ -14,7 +14,7 @@ into a weighted observation, and keeps the counters that say how much the eviden
 skill AGREES with itself rather than merely how much of it there is.
 
 Nothing here is probabilistic, model-driven or time-dependent: same inputs, same numbers,
-every time (CLAUDE.md RULE 4).
+every time.
 """
 
 from dataclasses import dataclass
@@ -65,7 +65,7 @@ class Observation:
     """One piece of student evidence about one skill.
 
     Constructing this is the ONLY way to submit evidence to the mastery update, and a
-    SystemFault cannot be packaged into one. That is CLAUDE.md RULE 3 enforced a step
+    SystemFault cannot be packaged into one. That is the safety invariant enforced a step
     earlier than before: an infrastructure failure can no longer even be expressed as
     evidence, let alone reach the arithmetic.
     """

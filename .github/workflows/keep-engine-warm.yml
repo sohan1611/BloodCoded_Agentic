@@ -10,10 +10,9 @@
 # whenever anybody opens it. Ten rather than fourteen leaves margin for GitHub's own
 # scheduling, which routinely runs cron minutes late under load and occasionally skips.
 #
-# ON CLAUDE.md RULE 1: this workflow authors nothing. It opens no pull request, pushes no
-# commit and adds no identity to the contributor list -- it makes one HTTP request and
-# exits. That is deliberate: RULE 1 forbids automation that commits, and a workflow that
-# needs write access to the repository does not belong here.
+# This workflow authors nothing. It opens no pull request, pushes no commit and adds no
+# identity to the contributor list -- it makes one HTTP request and exits, and it is
+# granted no write access to the repository.
 
 name: Keep engine warm
 

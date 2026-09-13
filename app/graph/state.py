@@ -123,8 +123,8 @@ class AgentState(TypedDict, total=False):
     """Prerequisite implicated by a DETERMINISTIC misconception rule, and nothing else.
 
     Kept separate from `detected_misconceptions[].implicates`, which may come from the
-    LLM. That value routes the next problem; this one moves a mastery score, and CLAUDE.md
-    RULE 4 forbids a model deciding what a student's record says about them."""
+    LLM. That value routes the next problem; this one moves a mastery score, and a model
+    must never decide what a student's record says about them."""
     session_status: str
     loop_count: int
     prereq_depth: int

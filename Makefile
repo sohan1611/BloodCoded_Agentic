@@ -2,12 +2,12 @@
 # make (Windows machines usually have no make, including the one this was built on).
 PY := python
 
-.PHONY: install smoke test ingest demo verify live check ablation ui space scan gates clean help
+.PHONY: install smoke test ingest demo verify live check ablation ui gates clean help
 
 help:               ## list the tasks
 	@$(PY) run.py
 
-install smoke test ingest demo verify live check ablation ui space scan gates:
+install smoke test ingest demo verify live check ablation ui gates:
 	@$(PY) run.py $@
 
 clean:

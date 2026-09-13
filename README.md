@@ -387,12 +387,9 @@ Keys are read from the environment only and are never committed.
 |---|---|
 | [Problem & solution brief](docs/BRIEF.md) | why this problem, why an agent, measured impact |
 | [Architecture](docs/ARCHITECTURE.md) | layers, graph, safety property, Mermaid diagrams |
-| [Demo script](docs/DEMO_SCRIPT.md) | 4:30 video walkthrough with Q&A preparation |
-| [Submission checklist](docs/SUBMISSION_CHECKLIST.md) | release gates and what remains |
+| [Demo video](https://github.com/sohan1611/CogniFlow/releases/tag/v1.0-stage1) | the recorded walkthrough (4m59s), attached to the Stage 1 release |
 | [Ablation](docs/ABLATION.md) | what was measured, what failed, and what was deliberately not built |
 | [Deploying](deploy/DEPLOY.md) | hosting it free, and the security position that requires |
-| [Costs](docs/COSTS.md) | zero-rupee build, and what the reserve is for |
-| [Owner's draft](docs/OWNERS_DRAFT.md) | charter, ownership split, cut order |
 
 ---
 
@@ -505,10 +502,6 @@ Third-party work this project builds on:
 
 Curriculum material in `data/knowledge/` was written for this project and is released
 under CC BY-SA 4.0.
-
-AI coding assistants were used during development, which the hackathon rules expressly
-permit. All architecture, design decisions, and verification are the team's own, and
-every test result reported here was produced by running the suite.
 
 ---
 

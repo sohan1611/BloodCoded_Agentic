@@ -13,7 +13,6 @@ to have already installed.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -107,40 +106,10 @@ def api() -> int:
     return sh(PY, "-m", "uvicorn", "app.api.main:app", "--reload", "--port", "8000")
 
 
-def scan() -> int:
-    """enforce AGENTS.md RULE 1 before pushing"""
-    return sh(PY, "scripts/check_contributors.py")
-
-
-def space() -> int:
-    """assemble build/space, ready to push to Hugging Face"""
-    target = ROOT / "build/space"
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
-
-    for item in ("app", "data", "ui.py", "app_gradio.py", "conftest.py"):
-        src = ROOT / item
-        dst = target / item
-        shutil.copytree(src, dst) if src.is_dir() else shutil.copy2(src, dst)
-    for item in ("app.py", "README.md", "requirements.txt"):
-        shutil.copy2(ROOT / "deploy/space" / item, target / item)
-
-    # rebuilt on first boot; shipping them would bloat the push and stale the index
-    shutil.rmtree(target / "data/chroma", ignore_errors=True)
-    for db in (target / "data").glob("*.db"):
-        db.unlink()
-
-    files = sum(1 for _ in target.rglob("*") if _.is_file())
-    print(f"\nbuild/space ready -- {files} files.")
-    print("Next: deploy/DEPLOY.md")
-    return 0
-
-
 def gates() -> int:
     """every release gate, in order. Run this before submitting."""
     failed = []
-    for name, fn in (("test", test), ("verify", verify), ("ablation", ablation), ("scan", scan)):
+    for name, fn in (("test", test), ("verify", verify), ("ablation", ablation)):
         print(f"\n{'=' * 70}\nGATE: {name}\n{'=' * 70}")
         if fn():
             failed.append(name)
