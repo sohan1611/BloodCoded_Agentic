@@ -11,10 +11,12 @@
  * feel, works in every browser, and cannot fail in a way that costs the user anything.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clearCachedJwt, type Health } from "@/lib/api";
 import { authClient } from "@/lib/auth/client";
 import { engineCopy, type EngineStatus } from "@/lib/engine";
+import { isPlainLeftClick } from "@/lib/home";
 
 /** Kept in step with the .glass-sweep animation in globals.css. */
 const SWEEP_MS = 620;
@@ -76,6 +78,7 @@ export function Shell({
   engine,
   children,
   sweeping,
+  onHome,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
@@ -86,6 +89,8 @@ export function Shell({
   engine: EngineStatus;
   children: React.ReactNode;
   sweeping: boolean;
+  /** Where a plain logo click goes inside the app; absent means an ordinary link. */
+  onHome?: () => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>("system");
@@ -183,20 +188,34 @@ export function Shell({
       <div className="shell">
         <header className="topbar">
           <div className="brand">
-            <img
-              className="cogniflow-logo cogniflow-logo-light"
-              src="/brand/cogniflow-icon-light.png"
-              width={158}
-              height={132}
-              alt="CogniFlow"
-            />
-            <img
-              className="cogniflow-logo cogniflow-logo-dark"
-              src="/brand/cogniflow-icon-dark.png"
-              width={158}
-              height={135}
-              alt="CogniFlow"
-            />
+            <Link
+              href="/"
+              className="brand-home"
+              aria-label="CogniFlow home"
+              onClick={(event) => {
+                // Inside the app a plain click returns to the learning plan without a
+                // reload; any other click keeps normal link behaviour (new tab, window).
+                if (onHome && isPlainLeftClick(event)) {
+                  event.preventDefault();
+                  onHome();
+                }
+              }}
+            >
+              <img
+                className="cogniflow-logo cogniflow-logo-light"
+                src="/brand/cogniflow-icon-light.png"
+                width={158}
+                height={132}
+                alt=""
+              />
+              <img
+                className="cogniflow-logo cogniflow-logo-dark"
+                src="/brand/cogniflow-icon-dark.png"
+                width={158}
+                height={135}
+                alt=""
+              />
+            </Link>
             <div className="brand-copy">
               {hasTemplateNotice && (
                 <div className="brand-line">

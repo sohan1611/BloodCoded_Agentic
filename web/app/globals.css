@@ -486,6 +486,22 @@ textarea:focus-visible {
 .cogniflow-logo-light { display: var(--brand-logo-light-display); }
 .cogniflow-logo-dark { display: var(--brand-logo-dark-display); }
 
+/* The logo is a link home. It must sit exactly where the bare image did: no underline,
+   no line-box gap under the image, and a focus ring only for keyboard users. */
+.brand-home {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  line-height: 0;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--r-sm);
+}
+.brand-home:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+
 .brand-copy { min-width: 0; padding-right: 20px; }
 
 .brand-line {

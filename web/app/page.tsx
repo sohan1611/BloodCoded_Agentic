@@ -774,6 +774,7 @@ export default function Page() {
       hasLearner={stage === "diagnostic" || stage === "app"}
       engine={engine}
       sweeping={sweeping}
+      onHome={stage === "app" ? () => changeTab("plan") : undefined}
     >
       {(engine.state === "waking" || engine.state === "offline") && (
         <EngineStatusBanner status={engine} />
