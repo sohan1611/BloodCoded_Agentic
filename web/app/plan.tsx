@@ -11,39 +11,23 @@
 
 import { useState } from "react";
 
-import type { Plan, PlanSkill, TutorEvent } from "@/lib/api";
+import type { LearnerActivity, Plan, PlanSkill, TutorEvent } from "@/lib/api";
+import { describeActivity } from "@/lib/activity";
+import { confirmationCopy, percent } from "@/lib/format";
+import {
+  filterRoadmap,
+  roadmapNumber,
+  unlockedSummary,
+} from "@/lib/roadmap";
+import { notMeasuredLabel, pretty, skillBlurb } from "@/lib/skills";
 
-const LABELS: Record<string, string> = {
-  variables: "Variables",
-  conditionals: "Conditionals",
-  loops: "Loops",
-  functions: "Functions",
-  function_call_tracing: "Function Call Tracing",
-  recursion: "Recursion",
-  recursion_tree: "Recursion Trees",
-  nested_loops: "Nested Loops",
-};
-
-const BLURBS: Record<string, string> = {
-  variables: "Store a value, give it a name, and use it again later.",
-  conditionals: "Make the program choose between two paths.",
-  loops: "Repeat work without writing it out every time.",
-  functions: "Package work up, hand it inputs, and get an answer back.",
-  function_call_tracing: "Follow a value as it moves between functions.",
-  recursion: "A function that solves a smaller version of its own problem.",
-  recursion_tree: "Recursion that branches, and the shape that makes.",
-  nested_loops: "A loop inside a loop, and what that costs.",
-};
-
-/* Exported so every screen names a skill identically. Progress spelled its own
-   "Recursion Tree" against the plan's "Recursion Trees" for exactly as long as this
-   lived here privately -- one student, one skill, two names. */
-export const pretty = (s: string) => LABELS[s] ?? s.replace(/_/g, " ");
-export const skillBlurb = (s: string) => BLURBS[s] ?? "A skill in this course.";
-export function notMeasuredLabel(reason: string | null) {
-  if (reason === null) return "Not checked yet";
-  return `Not checked — we stopped because ${pretty(reason)} needs work first.`;
-}
+export {
+  BLURBS,
+  LABELS,
+  notMeasuredLabel,
+  pretty,
+  skillBlurb,
+} from "@/lib/skills";
 
 export function LearningPlan({
   plan,
@@ -62,11 +46,8 @@ export function LearningPlan({
   // spec line meant to stop a fabricated control was read as licence to delete a real
   // one.
   const [query, setQuery] = useState("");
-  const needle = query.trim().toLowerCase();
-  const shown = needle
-    ? plan.skills.filter((s) => pretty(s.skill).toLowerCase().includes(needle))
-    : plan.skills;
-  const unlocked = plan.counts.done + plan.counts.provisional;
+  const needle = query.trim();
+  const shown = filterRoadmap(plan.skills, query);
 
   return (
     <section className="roadmap-section" aria-labelledby="roadmap-title">
@@ -75,7 +56,7 @@ export function LearningPlan({
           <i aria-hidden />
           CURRICULUM ROADMAP
         </span>
-        <span>{unlocked} of {plan.counts.total} unlocked</span>
+        <span>{unlockedSummary(plan.counts)}</span>
       </div>
 
       <div className="roadmap-search">
@@ -96,10 +77,12 @@ export function LearningPlan({
       )}
 
       <div className="plan">
-        {shown.map((skill, index) => {
+        {shown.map((skill) => {
           const active = skill.skill === activeSkill;
           const suggested = !activeSkill && skill.skill === plan.suggested_next;
-          const nextCompleted = shown[index + 1]?.state === "completed";
+          const nextCompleted = plan.skills.find(
+            (candidate) => candidate.position === skill.position + 1,
+          )?.state === "completed";
           return (
             <div
               className={`spine-item spine-${skill.state}${active ? " spine-active" : ""}${
@@ -112,7 +95,6 @@ export function LearningPlan({
               </div>
               <SkillCard
                 skill={skill}
-                index={index + 1}
                 active={active}
                 // Suppressed while a skill is in flight. Two cards competing for "do this
                 // next" is worse than none, and the honest next step for someone mid-topic
@@ -134,13 +116,12 @@ function spineGlyph(skill: PlanSkill, active: boolean) {
   if (skill.state === "completed") return "✓";
   if (skill.state === "provisional") return "◐";
   if (skill.state === "locked") return "🔒";
-  if (skill.state === "unmeasured") return "?";
   return "+";
 }
 
 function measurementLabel(value: number | null, suffix: string) {
   if (value === null) return "Not checked yet";
-  return `${(value * 100).toFixed(0)}% ${suffix}`;
+  return `${percent(value)} ${suffix}`;
 }
 
 function measurementWidth(value: number | null) {
@@ -150,22 +131,19 @@ function measurementWidth(value: number | null) {
 
 function SkillCard({
   skill,
-  index,
   active,
   suggested,
   onStart,
   busy,
 }: {
   skill: PlanSkill;
-  index: number;
   active: boolean;
   suggested: boolean;
   onStart: () => void;
   busy: boolean;
 }) {
-  const unmeasured = skill.state === "unmeasured";
-  const locked =
-    skill.state === "locked" || skill.not_measured_because !== null;
+  const unmeasured = !skill.measured;
+  const locked = skill.state === "locked";
   const done = skill.state === "completed";
   const provisional = skill.state === "provisional";
   const statusClass = done
@@ -175,14 +153,10 @@ function SkillCard({
       : provisional
         ? "chip maybe"
         : "chip";
-  const statusLabel = unmeasured ? "Not checked yet" : skill.state;
-  const progressLabel = unmeasured
-    ? "Not checked yet"
-    : locked
-      ? skill.state
-      : measurementLabel(skill.mastery, "complete");
+  const statusLabel = skill.state;
+  const progressLabel = measurementLabel(skill.mastery, "complete");
   const statusTitle = provisional
-    ? "Answered well once — one more to be sure"
+    ? confirmationCopy(skill.confirmation ?? null)
     : undefined;
   return (
     <article
@@ -201,7 +175,7 @@ function SkillCard({
       {active && <p className="flag active-now">Active now</p>}
 
       <span className="roadmap-index" aria-hidden>
-        {String(index).padStart(2, "0")}
+        {roadmapNumber(skill.position)}
       </span>
       <span className={`roadmap-icon roadmap-icon-${skill.state}${active ? " roadmap-icon-active" : ""}`} aria-hidden>
         {spineGlyph(skill, active)}
@@ -231,12 +205,10 @@ function SkillCard({
 
         {/* Locked is not a wall, it is an explanation. Saying which prerequisite is
             blocking turns "you can't" into "do this first". */}
-        {unmeasured && skill.not_measured_because !== null ? (
+        {locked && skill.not_measured_because !== null ? (
           <p className="muted roadmap-wait">
             {notMeasuredLabel(skill.not_measured_because)}
           </p>
-        ) : unmeasured ? (
-          <p className="muted roadmap-wait">Not checked yet</p>
         ) : locked ? (
           <p className="muted roadmap-wait">
             Waiting on {skill.blocked_by.map(pretty).join(", ")}
@@ -245,7 +217,7 @@ function SkillCard({
 
         {provisional && (
           <p className="muted roadmap-wait">
-            You got this right — one more to be sure
+            {confirmationCopy(skill.confirmation ?? null)}
           </p>
         )}
 
@@ -326,6 +298,7 @@ const TONE: Record<string, string> = {
   generated: "lilac",
   execution: "plain",
   misconception: "butter",
+  resolved: "leaf",
   mastery: "leaf",
   adaptation: "butter",
   guard_override: "butter",
@@ -337,12 +310,19 @@ const TONE: Record<string, string> = {
 
 const ICON: Record<string, string> = {
   diagnostic: "🔍", plan: "🗺", retrieval: "📚", generated: "✎", execution: "⚙",
-  misconception: "🧠", mastery: "📈", adaptation: "🧭", guard_override: "🛡",
+  misconception: "🧠", resolved: "✓", mastery: "📈", adaptation: "🧭", guard_override: "🛡",
   prereq_redirect: "↩", prereq_return: "↪", recovery: "🩹", session_end: "🏁",
 };
 
-export function ActivityPanel({ events }: { events: TutorEvent[] }) {
-  const recent = [...events].reverse().slice(0, 8);
+export function ActivityPanel({
+  activity,
+  events,
+}: {
+  activity: LearnerActivity[];
+  events?: TutorEvent[];
+}) {
+  const recent = [...activity].reverse().slice(0, 8);
+  const trace = events ? [...events].reverse().slice(0, 8) : [];
   return (
     <aside className="panel">
       <div className="head">
@@ -360,24 +340,44 @@ export function ActivityPanel({ events }: { events: TutorEvent[] }) {
         </div>
       )}
 
-      {recent.map((event, i) => (
-        <div className={`event ${TONE[event.type] ?? "plain"}`} key={i}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="kind">
-              <span className="badge" aria-hidden>{ICON[event.type] ?? "•"}</span>
-              {event.type.replace(/_/g, " ")}
-            </span>
-            <span className="when">{event.node}</span>
+      {recent.map((item, i) => {
+        const description = describeActivity(item);
+        return (
+          <div className={`event ${TONE[item.type] ?? "plain"}`} key={i}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <span className="kind">
+                <span className="badge" aria-hidden>{ICON[item.type] ?? "•"}</span>
+                {description.title}
+              </span>
+            </div>
+            <p>{description.detail}</p>
           </div>
-          <p>
-            {event.reason ??
-              Object.entries(event.payload)
-                .slice(0, 3)
-                .map(([k, v]) => `${k}=${String(v)}`)
-                .join(" · ")}
-          </p>
-        </div>
-      ))}
+        );
+      })}
+
+      {events && (
+        <details>
+          <summary>Engine trace (diagnostics)</summary>
+          {trace.map((event, i) => (
+            <div className={`event ${TONE[event.type] ?? "plain"}`} key={i}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <span className="kind">
+                  <span className="badge" aria-hidden>{ICON[event.type] ?? "•"}</span>
+                  {event.type.replace(/_/g, " ")}
+                </span>
+                <span className="when">{event.node}</span>
+              </div>
+              <p>
+                {event.reason ??
+                  Object.entries(event.payload)
+                    .slice(0, 3)
+                    .map(([key, value]) => `${key}=${String(value)}`)
+                    .join(" · ")}
+              </p>
+            </div>
+          ))}
+        </details>
+      )}
     </aside>
   );
 }

@@ -62,8 +62,9 @@ from app.models.schemas import (
     MisconceptionAnalysis,
     SkillNode,
 )
+from app.models.submission import is_blank_submission
 from app.services.events import EventType
-from app.mastery.misconceptions import detect, student_note_for
+from app.mastery.misconceptions import detect, student_feedback_for, student_note_for
 from app.tools.sandbox.classifier import classify_with_expectation
 from app.tools.sandbox.languages import spec_for
 from app.tools.sandbox.runner import run_submission, run_test_cases
@@ -681,6 +682,9 @@ def make_await_student(deps: GraphDeps) -> Node:
         else:
             code, answer = str(submission), None
 
+        if is_blank_submission(code) and is_blank_submission(answer):
+            return {"student_code": "", "student_answer": None}
+
         deps.events.emit(
             "await_student",
             EventType.SUBMISSION,
@@ -839,6 +843,7 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
         assert skill is not None
         execution = state.get("execution_result") or {}
         code = state.get("student_code") or ""
+        grade = dict(state.get("grader_result") or {})
 
         found = detect(
             code=code,
@@ -855,14 +860,50 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
                 confidence=0.9,
             )
             source = "deterministic"
+            analysis_was_fallback = False
         else:
+            problem = state.get("current_problem") or {}
+            failing_case = str(grade.get("failing_case") or "").strip()
+            expected_output = ""
+            for test_case in problem.get("test_cases") or []:
+                if (
+                    isinstance(test_case, dict)
+                    and str(test_case.get("name") or "").strip() == failing_case
+                ):
+                    expected_output = str(
+                        test_case.get("expected_output")
+                        or test_case.get("expected")
+                        or test_case.get("output")
+                        or ""
+                    ).strip()
+                    break
+            if not expected_output:
+                expected_output = str(problem.get("expected_output") or "").strip()
+
+            actual_output = str(execution.get("stdout", "")).strip()
+            test_evidence: list[str] = []
+            if failing_case:
+                test_evidence.append(f"Failing test: {failing_case}")
+            if expected_output:
+                test_evidence.append(
+                    f"Expected output:\n{expected_output[:300]}"
+                )
+            if actual_output:
+                test_evidence.append(f"Actual output:\n{actual_output[:300]}")
+            test_evidence_text = (
+                "\n\n" + "\n".join(test_evidence) if test_evidence else ""
+            )
+
             messages = [
                 {
                     "role": "system",
                     "content": (
                         "You name the single specific misunderstanding behind a failed "
                         "programming submission. Be concrete about what the student "
-                        "believes that is untrue. Do not restate the error message."
+                        "believes that is untrue. Do not restate the error message. "
+                        "Name only a misunderstanding that this code and these test "
+                        "results directly show; if they do not show one, say the "
+                        "evidence is insufficient rather than guessing at intent."
                     ),
                 },
                 {
@@ -873,6 +914,7 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
                         f"Their code:\n{code[:1200]}\n\n"
                         f"stderr:\n{str(execution.get('stderr', ''))[:600]}\n"
                         f"stdout:\n{str(execution.get('stdout', ''))[:300]}"
+                        f"{test_evidence_text}"
                     ),
                 },
             ]
@@ -888,21 +930,25 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
             analysis = result.value  # type: ignore[assignment]
             assert isinstance(analysis, MisconceptionAnalysis)
             source = result.provider_used or "fallback"
+            analysis_was_fallback = result.used_fallback
 
-        # Record it on the skill itself, so it persists across sessions and can inform
-        # future problem generation. Deduplicated: repeating the same misconception is
-        # signal about frequency, not new information.
         skills = dict(state.get("skill_graph", {}))
-        node_data = dict(skills.get(skill, {}))
-        existing = list(node_data.get("misconceptions", []))
-        if analysis.misconception not in existing:
-            existing.append(analysis.misconception)
-            node_data["misconceptions"] = existing[-5:]
-            skills[skill] = node_data
-            try:
-                deps.store.save_skill(state["student_id"], SkillNode(**node_data))
-            except Exception as exc:  # noqa: BLE001 - colour must not break a session
-                logger.warning("could not persist misconception: %s", exc)
+        # An outage is ours, and a record of the learner must never contain a sentence
+        # the tutor wrote because it could not reach a model.
+        if not analysis_was_fallback:
+            # Record it on the skill itself, so it persists across sessions and can
+            # inform future problem generation. Deduplicated: repeating the same
+            # misconception is signal about frequency, not new information.
+            node_data = dict(skills.get(skill, {}))
+            existing = list(node_data.get("misconceptions", []))
+            if analysis.misconception not in existing:
+                existing.append(analysis.misconception)
+                node_data["misconceptions"] = existing[-5:]
+                skills[skill] = node_data
+                try:
+                    deps.store.save_skill(state["student_id"], SkillNode(**node_data))
+                except Exception as exc:  # noqa: BLE001 - colour must not break a session
+                    logger.warning("could not persist misconception: %s", exc)
 
         deps.events.emit(
             "analyze_misconception",
@@ -922,14 +968,16 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
         # they already knew, and tells everyone else nothing. This node is the first
         # point where the CAUSE is known, so it is the right place to phrase it.
         patch: dict[str, Any] = {
-            "skill_graph": skills,
             # ONLY the deterministic pattern may move a mastery score. `found` is a match
             # against the interpreter's own stderr -- a NameError IS a scope fact -- while
             # analysis.likely_prerequisite_gap may have come from the model. The model's
             # opinion still routes the next problem through detected_misconceptions below;
             # it must never decide what a student's record says about them (RULE 4).
             "attribution_hint": found.prerequisite_hint if found is not None else None,
-            "detected_misconceptions": [
+        }
+        if not analysis_was_fallback:
+            patch["skill_graph"] = skills
+            patch["detected_misconceptions"] = [
                 *state.get("detected_misconceptions", []),
                 {
                     "skill": skill,
@@ -937,14 +985,14 @@ def make_analyze_misconception(deps: GraphDeps) -> Node:
                     "implicates": analysis.likely_prerequisite_gap,
                     "confidence": analysis.confidence,
                 },
-            ],
-        }
-        # The wording follows the code they actually wrote, not the pattern's name.
-        note = (
-            student_note_for(found, code) if found is not None else analysis.misconception
+            ]
+        # The model's hypothesis is a working note, recorded above in the event stream,
+        # detected_misconceptions and the skill record. The student is told only what
+        # the tutor actually knows.
+        note = student_feedback_for(
+            found, outcome, str(grade.get("feedback") or ""), code
         )
         if note:
-            grade = dict(state.get("grader_result") or {})
             grade["feedback"] = note
             patch["grader_result"] = grade
         return patch

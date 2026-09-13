@@ -424,6 +424,9 @@ answered wrong) and *guess* (didn't know it, answered right) explicitly, and pro
 **confidence** signal from effective sample size that the adaptation policy actually
 consumes — three attempts and thirty attempts at the same mastery are not equally
 trustworthy, and the policy needs to know that.
+[Architecture §7](docs/ARCHITECTURE.md#mastery-confidence-certainty) distinguishes
+learner-facing confidence (monotone evidence coverage) from internal certainty (coverage
+times agreement, used by the mastery gate).
 
 Implementation: [`app/mastery/bkt.py`](app/mastery/bkt.py).
 

@@ -35,18 +35,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from app.api.presentation import learner_activity, learner_notes
 from app.config.settings import get_settings
 from app.graph.builder import build_graph
 from app.graph.deps import GraphDeps
 from app.graph.state import initial_state
 from app.llm.provider import Role, available_chain
+from app.mastery.evidence import coverage
 from app.mastery.misconceptions import hints_for
 from app.mastery.difficulty import rung_for
-from app.mastery.policy import MASTERY_THRESHOLD, is_mastered
+from app.mastery.policy import MASTERY_THRESHOLD, is_mastered, roadmap_state
 from app.mastery.skill_graph import SkillGraph, weakest_startable
 from app.models.enums import Difficulty, Language, StudentOutcome
+from app.models.submission import EMPTY_SUBMISSION_MESSAGE, is_blank_submission
 from app.rag.retriever import Retriever
 from app.services.auth import Account, AuthError, TokenVerifier
+from app.services.attempts import attempts_by_skill, exercise_attempts
+from app.services.belief import confirmation, shown_confidence
 from app.services.diagnostic import DiagnosticSession
 from app.services.events import EventLog, EventType
 from app.services.student_store import (
@@ -176,6 +181,7 @@ class StartRequest(BaseModel):
 
 class SubmitRequest(BaseModel):
     code: str = Field(max_length=20_000)
+    phased: bool = False
 
 
 class DiagnosticAnswer(BaseModel):
@@ -197,6 +203,9 @@ class Session:
     state: dict[str, Any] | None = None
     diagnostic: DiagnosticSession | None = None
     language: str = Language.PYTHON.value
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    phase: str = "idle"
+    phase_error: str | None = None
     _sandbox: SubprocessSandbox = field(default_factory=SubprocessSandbox)
 
 
@@ -408,12 +417,39 @@ def _difficulty_change(events: EventLog) -> dict[str, Any] | None:
     }
 
 
+def _at_breakpoint(snapshot: Any) -> bool:
+    """Whether execution stopped after grading rather than for learner input."""
+    return bool(snapshot.next) and not any(
+        task.interrupts for task in snapshot.tasks
+    )
+
+
+def _awaiting_student(snapshot: Any) -> bool:
+    """Whether the graph is genuinely interrupted waiting for learner input."""
+    return snapshot.next == ("await_student",) and any(
+        task.interrupts for task in snapshot.tasks
+    )
+
+
 def _view(session: Session) -> dict[str, Any]:
     """Everything a frontend needs to draw the current moment."""
+    expose_diagnostics = get_settings().expose_diagnostics
     snapshot = session.graph.get_state(session.cfg)
     values, pending = snapshot.values, snapshot.next
     problem = values.get("current_problem") or {}
     grade = values.get("grader_result") or {}
+
+    problem_view = None
+    if problem:
+        problem_view = {
+            "title": problem.get("title"),
+            "prompt": problem.get("prompt"),
+            "starter_code": problem.get("starter_code", ""),
+            "expected_output": problem.get("expected_output", ""),
+            "assessment_type": problem.get("assessment_type"),
+        }
+        if expose_diagnostics:
+            problem_view["grounded_in"] = problem.get("grounding_sources", [])
 
     raw_outcome = str(values.get("error_type") or "")
     try:
@@ -422,19 +458,14 @@ def _view(session: Session) -> dict[str, Any]:
     except ValueError:
         student_evidence = False
 
-    return {
+    view = {
         "student_id": session.student_id,
         "name": session.display_name,
-        "awaiting_student": bool(pending),
+        "awaiting_student": _awaiting_student(snapshot),
         "suspended_at": pending[0] if pending else None,
-        "problem": {
-            "title": problem.get("title"),
-            "prompt": problem.get("prompt"),
-            "starter_code": problem.get("starter_code", ""),
-            "expected_output": problem.get("expected_output", ""),
-            "assessment_type": problem.get("assessment_type"),
-            "grounded_in": problem.get("grounding_sources", []),
-        } if problem else None,
+        "phase": session.phase,
+        "phase_error": session.phase_error,
+        "problem": problem_view,
         "feedback": {
             "passed": grade.get("passed"),
             "score": grade.get("score"),
@@ -445,13 +476,17 @@ def _view(session: Session) -> dict[str, Any]:
         } if grade else None,
         "target_skill": values.get("target_skill"),
         "language": values.get("language") or session.language,
-        "teaching_mode": values.get("teaching_mode"),
         "difficulty": values.get("difficulty_level"),
         "mastery": values.get("mastery_scores", {}),
-        # Mastery was shipped without it, so the exercise screen showed a bare 0.56 with
-        # nothing to say whether that rested on one observation or ten. A belief without
-        # its evidence is the thing this release exists to stop presenting.
-        "confidence": values.get("confidence_scores", {}),
+        # The learner sees evidence coverage. Agreement-weighted confidence remains in
+        # the graph for routing and confirmation, but presenting it as evidence strength
+        # made a correct answer appear to erase confidence.
+        "confidence": {
+            skill: round(
+                coverage(float((node or {}).get("evidence_weight") or 0.0)), 4
+            )
+            for skill, node in (values.get("skill_graph") or {}).items()
+        },
         "measured": sorted(
             skill
             for skill, node in (values.get("skill_graph") or {}).items()
@@ -461,8 +496,13 @@ def _view(session: Session) -> dict[str, Any]:
         "recommended_next": values.get("recommended_next_skill"),
         "session_status": values.get("session_status"),
         "difficulty_change": _difficulty_change(session.events),
-        "events": _serialise_events(session.events),
+        "activity": learner_activity(session.events.events),
     }
+    if expose_diagnostics:
+        view["events"] = _serialise_events(session.events)
+        # How the tutor chose to teach is engine metadata; no learner screen reads it.
+        view["teaching_mode"] = values.get("teaching_mode")
+    return view
 
 
 # ----------------------------------------------------------------- endpoints
@@ -502,9 +542,29 @@ def skills() -> dict[str, Any]:
                 "prerequisites": graph.prerequisites(name),
                 "unlocks": graph.dependents(name),
             }
-            for name in sorted(graph.nodes)
+            for name in graph.curriculum_order()
         ],
     }
+
+
+@app.get("/me")
+def me(account: Account | None = Depends(_caller)) -> dict[str, Any]:
+    """Describe the authenticated learner without creating durable or session state."""
+    if account is None:
+        raise HTTPException(404, "Accounts are not enabled on this server.")
+
+    store = StudentStore()
+    try:
+        exists = store.exists(account.user_id)
+        return {
+            "student_id": account.user_id,
+            "exists": exists,
+            "needs_diagnostic": (
+                store.needs_diagnostic(account.user_id) if exists else True
+            ),
+        }
+    finally:
+        store.close()
 
 
 @app.post("/session")
@@ -633,25 +693,63 @@ def begin_tutoring(
     """Run the graph until it suspends waiting for the student."""
     _require_name_in_name_mode(req, account)
     session = _session(student_id)
-    language_spec = _language_or_400(req.language or session.language)
-    session.language = language_spec.language.value
+    if not session.lock.acquire(blocking=False):
+        raise HTTPException(409, "We're still checking your last answer.")
+    try:
+        language_spec = _language_or_400(req.language or session.language)
+        session.language = language_spec.language.value
 
-    # The one place grounding is actually about to be used. Waiting here on a cold
-    # container is a slower first problem; NOT waiting is an ungrounded one, and an
-    # ungrounded problem is indistinguishable from a grounded one until a judge asks
-    # which page it came from.
-    INDEX_READY.wait(timeout=180)
+        # The one place grounding is actually about to be used. Waiting here on a cold
+        # container is a slower first problem; NOT waiting is an ungrounded one, and an
+        # ungrounded problem is indistinguishable from a grounded one until a judge asks
+        # which page it came from.
+        INDEX_READY.wait(timeout=180)
 
-    session.state = session.graph.invoke(
-        initial_state(
-            student_id,
-            f"api-{student_id}",
-            target_skill=req.target_skill,
-            language=language_spec.language,
-        ),
-        session.cfg,
+        session.state = session.graph.invoke(
+            initial_state(
+                student_id,
+                f"api-{student_id}",
+                target_skill=req.target_skill,
+                language=language_spec.language,
+            ),
+            session.cfg,
+        )
+        return _view(session)
+    finally:
+        session.lock.release()
+
+
+def _finish_turn(session: Session) -> None:
+    """Finish plan updates after the deterministic grade has been returned."""
+    # Publish the terminal phase before releasing the lock; callers may briefly see
+    # "idle"/"failed" while it is held, since reversing this can overwrite a newer turn.
+    try:
+        session.state = session.graph.invoke(None, session.cfg)
+        session.phase = "idle"
+        session.phase_error = None
+    except Exception:  # noqa: BLE001 - surfaced as an infrastructure failure
+        logger.exception("failed to finish turn for student %s", session.student_id)
+        session.phase = "failed"
+        session.phase_error = (
+            "We couldn't finish updating your plan. Your answer was saved."
+        )
+    finally:
+        session.lock.release()
+
+
+def _start_finish_worker(session: Session) -> dict[str, Any]:
+    """Mark a paused turn updating and transfer its held lock to a worker."""
+    session.phase = "updating"
+    session.phase_error = None
+    view = _view(session)
+    worker = threading.Thread(
+        target=_finish_turn,
+        args=(session,),
+        name=f"finish-turn-{session.student_id}",
+        daemon=True,
     )
-    return _view(session)
+    worker.start()
+    return view
 
 
 @app.post("/session/{student_id}/submit")
@@ -661,9 +759,69 @@ def submit(
     _account: Account | None = Depends(_student_owner),
 ) -> dict[str, Any]:
     """Resume the suspended graph with the student's code."""
+    if is_blank_submission(req.code):
+        raise HTTPException(422, EMPTY_SUBMISSION_MESSAGE)
     session = _session(student_id)
-    session.state = session.graph.invoke(Command(resume={"code": req.code}), session.cfg)
-    return _view(session)
+    if not session.lock.acquire(blocking=False):
+        raise HTTPException(409, "We're still checking your last answer.")
+
+    try:
+        snapshot = session.graph.get_state(session.cfg)
+    except Exception:
+        session.lock.release()
+        raise
+    if not _awaiting_student(snapshot):
+        session.lock.release()
+        raise HTTPException(409, "There's no exercise waiting for an answer.")
+
+    if not req.phased:
+        try:
+            session.state = session.graph.invoke(
+                Command(resume={"code": req.code}), session.cfg
+            )
+            return _view(session)
+        finally:
+            session.lock.release()
+
+    try:
+        session.state = session.graph.invoke(
+            Command(resume={"code": req.code}),
+            session.cfg,
+            interrupt_after=["execute_and_grade"],
+        )
+        snapshot = session.graph.get_state(session.cfg)
+        if _at_breakpoint(snapshot):
+            return _start_finish_worker(session)
+        view = _view(session)
+    except Exception:
+        session.lock.release()
+        raise
+
+    session.lock.release()
+    return view
+
+
+@app.post("/session/{student_id}/continue")
+def continue_turn(
+    student_id: str,
+    _account: Account | None = Depends(_student_owner),
+) -> dict[str, Any]:
+    """Resume a turn whose post-grade plan update is paused or failed."""
+    session = _session(student_id)
+    if not session.lock.acquire(blocking=False):
+        raise HTTPException(409, "We're still checking your last answer.")
+
+    try:
+        snapshot = session.graph.get_state(session.cfg)
+        if _at_breakpoint(snapshot):
+            return _start_finish_worker(session)
+        view = _view(session)
+    except Exception:
+        session.lock.release()
+        raise
+
+    session.lock.release()
+    return view
 
 
 @app.get("/session/{student_id}")
@@ -710,51 +868,56 @@ def learning_plan(
     system -- a frontend recomputing them would be a second, silently diverging
     implementation of the one thing that must not have two.
     """
+    expose_diagnostics = get_settings().expose_diagnostics
     store = StudentStore()
     if not store.exists(student_id):
         raise HTTPException(404, f"no student {student_id!r}")
 
     nodes = store.load_skills(student_id)
+    rows = store.attempts_for(student_id)
+    attempts = exercise_attempts(rows)
+    skill_attempts = attempts_by_skill(rows)
     graph = SkillGraph(nodes)
+    rank = {
+        name: index
+        for index, name in enumerate(SkillGraph.from_yaml(SKILLS_CONFIG).nodes)
+    }
+    order = graph.curriculum_order(rank)
     plan: list[dict[str, Any]] = []
-    for name in sorted(nodes):
+    for position, name in enumerate(order, start=1):
         node = nodes[name]
-        # Locking is a routing judgement about PREREQUISITES and stays mastery-only,
-        # exactly as the graph and the policy guard compute it. Confidence belongs in the
-        # question below it -- "has this student finished this?" -- not here, or a
-        # student would be shut out of a topic because the tutor is unsure about
-        # something upstream, which is the tutor's problem and not theirs.
         blocking = graph.unmastered_prerequisites(name, MASTERY_THRESHOLD)
-
-        if not node.measured:
-            state = "unmeasured"
-        elif is_mastered(node.mastery, node.confidence):
-            state = "completed"
-        elif node.mastery >= MASTERY_THRESHOLD:
-            # Answered well, but on thin evidence. Checked BEFORE `locked` on purpose:
-            # this student has shown the skill, and the estimate is about them. Refusing
-            # them a topic they just got right, because something upstream is unproven,
-            # would be the tutor arguing with its own observation.
-            state = "provisional"
-        elif blocking:
-            state = "locked"
-        else:
-            state = "available"
+        display_confidence = shown_confidence(node)
         plan.append(
             {
                 "skill": name,
-                "state": state,
+                "state": roadmap_state(node, blocking),
+                "measured": node.measured,
+                "position": position,
                 "mastery": round(node.mastery, 4) if node.measured else None,
-                "confidence": round(node.confidence, 4) if node.measured else None,
-                "attempts": node.attempts,
+                "confidence": (
+                    round(display_confidence, 4)
+                    if display_confidence is not None
+                    else None
+                ),
+                "confirmation": confirmation(node),
+                "attempts": skill_attempts.get(name, 0),
                 "prerequisites": graph.prerequisites(name),
                 "blocked_by": blocking,
                 "not_measured_because": (
                     blocking[0] if not node.measured and blocking else None
                 ),
                 "unlocks": graph.dependents(name),
-                "misconceptions": node.misconceptions,
-                "overcome": node.resolved_misconceptions,
+                "misconceptions": (
+                    node.misconceptions
+                    if expose_diagnostics
+                    else learner_notes(node.misconceptions)
+                ),
+                "overcome": (
+                    node.resolved_misconceptions
+                    if expose_diagnostics
+                    else learner_notes(node.resolved_misconceptions)
+                ),
             }
         )
 
@@ -765,7 +928,7 @@ def learning_plan(
     return {
         "student_id": student_id,
         "suggested_next": suggested,
-        "total_attempts": len(store.attempts_for(student_id)),
+        "total_attempts": len(attempts),
         "counts": {
             "total": len(plan),
             "done": sum(1 for i in plan if i["state"] == "completed"),
@@ -774,14 +937,16 @@ def learning_plan(
             # real, and burying that in "upcoming" throws it away -- but calling it
             # "done" is the overclaim this state exists to stop.
             "provisional": sum(1 for i in plan if i["state"] == "provisional"),
-            "unmeasured": sum(1 for i in plan if i["state"] == "unmeasured"),
-            # The four counts PARTITION the total, so they can be read side by side and
-            # add up. Before "provisional" existed, upcoming meant "not completed" and
-            # that was the same thing; with a third state it silently started counting
-            # the middle bucket twice -- 0 done, 3 looking good, 8 upcoming, out of 8.
-            "upcoming": sum(
-                1 for i in plan if i["state"] in ("locked", "available")
+            # Done, provisional, available and locked partition the total. Unmeasured
+            # is an evidence overlay that cuts across those navigation states.
+            "available": sum(1 for i in plan if i["state"] == "available"),
+            "locked": sum(1 for i in plan if i["state"] == "locked"),
+            "unlocked": sum(
+                1
+                for i in plan
+                if i["state"] in ("completed", "provisional", "available")
             ),
+            "unmeasured": sum(1 for i in plan if not i["measured"]),
         },
         "skills": plan,
     }
@@ -810,8 +975,9 @@ def activity(
         raise HTTPException(404, f"no student {student_id!r}")
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    attempt_rows = store.attempts_for(student_id)
     rows = []
-    for row in store.attempts_for(student_id):
+    for row in exercise_attempts(attempt_rows):
         try:
             when = datetime.fromisoformat(row["created_at"])
         except (TypeError, ValueError):
@@ -846,18 +1012,34 @@ def progress(
     _account: Account | None = Depends(_student_owner),
 ) -> dict[str, Any]:
     """Durable state, readable without an active session -- this is the dashboard."""
+    expose_diagnostics = get_settings().expose_diagnostics
     store = StudentStore()
     if not store.exists(student_id):
         raise HTTPException(404, f"no student {student_id!r}")
     nodes = store.load_skills(student_id)
-    attempts = store.attempts_for(student_id)
+    rows = store.attempts_for(student_id)
+    attempts = exercise_attempts(rows)
+    skill_attempts = attempts_by_skill(rows)
     graph = SkillGraph(nodes)
+    rank = {
+        name: index
+        for index, name in enumerate(SkillGraph.from_yaml(SKILLS_CONFIG).nodes)
+    }
+    curriculum_position = {
+        name: index for index, name in enumerate(graph.curriculum_order(rank))
+    }
     measured = [node for node in nodes.values() if node.measured]
     skills = []
     for name, node in sorted(
-        nodes.items(), key=lambda item: (not item[1].measured, item[1].mastery, item[0])
+        nodes.items(),
+        key=lambda item: (
+            not item[1].measured,
+            item[1].mastery,
+            curriculum_position[item[0]],
+        ),
     ):
         blocking = graph.unmastered_prerequisites(name, MASTERY_THRESHOLD)
+        display_confidence = shown_confidence(node)
         if not node.measured:
             state = "unmeasured"
         elif is_mastered(node.mastery, node.confidence):
@@ -871,13 +1053,26 @@ def progress(
                 "skill": name,
                 "state": state,
                 "mastery": node.mastery if node.measured else None,
-                "confidence": node.confidence if node.measured else None,
-                "attempts": node.attempts,
+                "confidence": (
+                    round(display_confidence, 4)
+                    if display_confidence is not None
+                    else None
+                ),
+                "confirmation": confirmation(node),
+                "attempts": skill_attempts.get(name, 0),
                 "not_measured_because": (
                     blocking[0] if not node.measured and blocking else None
                 ),
-                "misconceptions": node.misconceptions,
-                "overcome": node.resolved_misconceptions,
+                "misconceptions": (
+                    node.misconceptions
+                    if expose_diagnostics
+                    else learner_notes(node.misconceptions)
+                ),
+                "overcome": (
+                    node.resolved_misconceptions
+                    if expose_diagnostics
+                    else learner_notes(node.resolved_misconceptions)
+                ),
             }
         )
     return {

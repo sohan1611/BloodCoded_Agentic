@@ -3176,3 +3176,61 @@ code {
   min-height: 44px;
   max-width: 100%;
 }
+
+/* ------------------------------------------------------------------ startup skeletons */
+.skeleton {
+  --skeleton-base: var(--surface-soft);
+  --skeleton-highlight: var(--card-bg);
+  position: relative;
+  overflow: hidden;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--skeleton-base);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 25%,
+    var(--skeleton-highlight) 50%,
+    transparent 75%
+  );
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+.skeleton-heading {
+  width: min(100%, 430px);
+  height: 56px;
+  border-radius: var(--r-sm);
+}
+.skeleton-card {
+  height: 138px;
+}
+.who.identity-skeleton {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  cursor: default;
+  pointer-events: none;
+}
+
+@keyframes skeleton-shimmer {
+  to { transform: translateX(100%); }
+}
+
+@media (min-width: 768px) {
+  .who.identity-skeleton {
+    width: 150px;
+    min-width: 150px;
+    height: 52px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after { animation: none; }
+}

@@ -3,13 +3,20 @@
 /**
  * The student experience, as a small state machine behind glass.
  *
- *   welcome -> diagnostic -> plan <-> learn <-> progress
+ *   resuming -> welcome -> diagnostic -> plan <-> learn <-> progress
  *
  * Transitions are driven by what the engine returns. This component knows how to draw a
  * problem; it does not know how a problem is chosen, and it must not learn.
  */
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
 import {
   ApiError,
   api,
@@ -17,6 +24,8 @@ import {
   type Activity,
   type DiagnosticStep,
   type LanguageOption,
+  type LearnerActivity,
+  type Me,
   type Plan,
   type Progress,
   type TutorEvent,
@@ -24,8 +33,18 @@ import {
   type PlanSkill,
 } from "@/lib/api";
 import { engineCopy, useEngineStatus, type EngineStatus } from "@/lib/engine";
+import { beliefLine, percent } from "@/lib/format";
+import { checkSubmission } from "@/lib/submission";
+import { startupDecision } from "@/lib/startup";
+import {
+  POLL_INTERVAL_MS,
+  phaseLabel,
+  settledView,
+  shouldKeepPolling,
+  type TurnPhase,
+} from "@/lib/turn";
 import { StudentDashboard } from "./dashboard";
-import { CodeEditor } from "./editor";
+import { CodeEditor, type CodeEditorHandle } from "./editor";
 import {
   ActivityPanel,
   LearningPlan,
@@ -36,7 +55,7 @@ import {
 import { Shell, type Tab, useGlassSwap } from "./shell";
 import { authClient } from "@/lib/auth/client";
 
-type Stage = "welcome" | "diagnostic" | "app";
+type Stage = "resuming" | "welcome" | "diagnostic" | "app";
 
 type VisibleError = {
   message: string;
@@ -44,10 +63,12 @@ type VisibleError = {
   recovery?: "sign-out";
 };
 
-type SlowTutorAction = "begin" | "submit";
+type SlowTutorAction = "begin";
 
 const RESTART_NOTE =
   "The tutor restarted while you were away, so that exercise was closed. Your progress is saved — pick up where you left off.";
+const TURN_BUSY_MESSAGE = "We're still checking your last answer.";
+const TURN_TIMEOUT_MESSAGE = "This is taking longer than usual. Your answer was saved.";
 
 function startOfLocalDay(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -171,6 +192,12 @@ function isMissingSession(error: unknown) {
   return error instanceof ApiError && error.status === 404;
 }
 
+function isTurnBusy(error: unknown) {
+  return error instanceof ApiError &&
+    error.status === 409 &&
+    error.message === TURN_BUSY_MESSAGE;
+}
+
 function dashboardFocus(plan: Plan, activeSkill: string | null) {
   const focusId = activeSkill ?? plan.suggested_next;
   if (!focusId) return null;
@@ -178,13 +205,13 @@ function dashboardFocus(plan: Plan, activeSkill: string | null) {
 }
 
 export default function Page() {
-  const [stage, setStage] = useState<Stage>("welcome");
+  const [stage, setStage] = useState<Stage>("resuming");
   const [tab, setTab] = useState<Tab>("plan");
   const [language, setLanguage] = useState("");
   const [id, setId] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>("idle");
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [beginningSkill, setBeginningSkill] = useState<string | null>(null);
   const [slowTutorAction, setSlowTutorAction] = useState<SlowTutorAction | null>(null);
@@ -197,7 +224,9 @@ export default function Page() {
   const [view, setView] = useState<TutorView | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [code, setCode] = useState("");
+  const [submissionNotice, setSubmissionNotice] = useState<string | null>(null);
   const [hints, setHints] = useState<string[]>([]);
   const [shown, setShown] = useState(0);
 
@@ -210,10 +239,15 @@ export default function Page() {
   const languageOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const navigationId = useRef(0);
   const recoveredDraft = useRef<{ skill: string; code: string } | null>(null);
+  const turnInFlight = useRef(false);
+  const meRequested = useRef(false);
+  const resumeRequested = useRef(false);
+  const editorRef = useRef<CodeEditorHandle>(null);
   const languageOptions = health?.languages ?? [];
   const accountEmail = accountSession?.user.email ?? "";
   const displayName =
-    accountSession?.user.name?.trim() || accountEmail.split("@")[0] || "Learner";
+    accountSession?.user.name?.trim() || accountEmail.split("@")[0] || "";
+  const hasAccount = Boolean(accountSession?.user);
   const hasLanguagePicker = languageOptions.length > 1;
   const selectedLanguage =
     hasLanguagePicker && languageOptions.some((option) => option.value === language)
@@ -244,16 +278,12 @@ export default function Page() {
   }, [engine.state]);
 
   useEffect(() => {
-    const nextAction: SlowTutorAction | null = beginningSkill
-      ? "begin"
-      : submitting
-        ? "submit"
-        : null;
+    const nextAction: SlowTutorAction | null = beginningSkill ? "begin" : null;
     setSlowTutorAction(null);
     if (!nextAction) return;
     const timer = window.setTimeout(() => setSlowTutorAction(nextAction), 3_000);
     return () => window.clearTimeout(timer);
-  }, [beginningSkill, submitting]);
+  }, [beginningSkill]);
 
   const presentError = useCallback((err: unknown) => {
     if (err instanceof ApiError) {
@@ -340,16 +370,22 @@ export default function Page() {
   };
 
   // -------------------------------------------------------------- actions
-  const applyDiagnosticStep = (next: DiagnosticStep) => {
-    setStep(next);
-    setCode(next.complete ? "" : next.starter_code);
+  const editCode = (next: string) => {
+    setCode(next);
+    setSubmissionNotice(null);
   };
 
-  const reopenSession = async () => {
+  const applyDiagnosticStep = useCallback((next: DiagnosticStep) => {
+    setStep(next);
+    setCode(next.complete ? "" : next.starter_code);
+    setSubmissionNotice(null);
+  }, []);
+
+  const reopenSession = useCallback(async () => {
     const session = await api.startSession(displayName, selectedLanguage || undefined);
     setId(session.student_id);
     return session;
-  };
+  }, [displayName, selectedLanguage]);
 
   const recoverDiagnostic = async () => {
     const session = await reopenSession();
@@ -359,6 +395,7 @@ export default function Page() {
 
   const recoverExercise = async (skill: string | null, expectedNavigationId: number) => {
     if (skill) recoveredDraft.current = { skill, code };
+    setSubmissionNotice(null);
     const session = await reopenSession();
     setView(null);
     setHints([]);
@@ -383,26 +420,77 @@ export default function Page() {
     }
   };
 
-  const begin = () =>
-    guard(async () => {
-      const session = await api.startSession(displayName, selectedLanguage || undefined);
-      setId(session.student_id);
-      if (session.needs_diagnostic) {
-        let first: DiagnosticStep;
-        try {
-          first = await api.diagnosticQuestion(session.student_id);
-        } catch (requestError) {
-          if (!isMissingSession(requestError)) throw requestError;
-          const reopened = await reopenSession();
-          first = await api.diagnosticQuestion(reopened.student_id);
-        }
-        applyDiagnosticStep(first);
-        swap(() => setStage("diagnostic"));
-      } else {
-        setPlan(await api.plan(session.student_id));
-        swap(() => setStage("app"));
+  const enterLearning = useCallback(async () => {
+    const session = await api.startSession(displayName, selectedLanguage || undefined);
+    setId(session.student_id);
+    if (session.needs_diagnostic) {
+      let first: DiagnosticStep;
+      try {
+        first = await api.diagnosticQuestion(session.student_id);
+      } catch (requestError) {
+        if (!isMissingSession(requestError)) throw requestError;
+        const reopened = await reopenSession();
+        first = await api.diagnosticQuestion(reopened.student_id);
       }
-    }, setStarting);
+      applyDiagnosticStep(first);
+      swap(() => setStage("diagnostic"));
+    } else {
+      setPlan(await api.plan(session.student_id));
+      swap(() => setStage("app"));
+    }
+  }, [applyDiagnosticStep, displayName, reopenSession, selectedLanguage, swap]);
+
+  const begin = () => guard(enterLearning, setStarting);
+
+  useEffect(() => {
+    if (stage !== "resuming") return;
+
+    const decision = startupDecision({
+      accountPending,
+      hasAccount,
+      engineOnline: engine.state === "online",
+      me,
+    });
+
+    if (decision === "sign-in") {
+      window.location.replace("/auth/sign-in");
+      return;
+    }
+    if (decision === "welcome") {
+      setStage("welcome");
+      return;
+    }
+    if (decision === "resume") {
+      if (resumeRequested.current) return;
+      resumeRequested.current = true;
+      void enterLearning().catch((requestError) => {
+        setStage("welcome");
+        presentError(requestError);
+      });
+      return;
+    }
+    if (
+      !accountPending &&
+      hasAccount &&
+      engine.state === "online" &&
+      me === null &&
+      !meRequested.current
+    ) {
+      meRequested.current = true;
+      void api.me().then(setMe).catch((requestError) => {
+        setStage("welcome");
+        presentError(requestError);
+      });
+    }
+  }, [
+    accountPending,
+    engine.state,
+    enterLearning,
+    hasAccount,
+    me,
+    presentError,
+    stage,
+  ]);
 
   const answer = (submitted: string) =>
     guard(async () => {
@@ -416,6 +504,17 @@ export default function Page() {
       }
     }, setActionBusy);
 
+  const submitDiagnostic = () => {
+    const check = checkSubmission(code);
+    if (!check.ok) {
+      setSubmissionNotice(check.message);
+      editorRef.current?.focus();
+      return;
+    }
+    setSubmissionNotice(null);
+    return answer(code);
+  };
+
   const enterApp = () =>
     guard(async () => {
       setPlan(await api.plan(id));
@@ -427,6 +526,7 @@ export default function Page() {
 
   const startSkill = (skill: string) => {
     const actionNavigationId = ++navigationId.current;
+    setSubmissionNotice(null);
     setLoadingTab(null);
     setBeginningSkill(skill);
     swap(() => setTab("learn"));
@@ -450,26 +550,166 @@ export default function Page() {
     }, setActionBusy);
   };
 
-  const submit = () => {
-    const actionNavigationId = navigationId.current;
-    return guard(async () => {
-      let next: TutorView;
-      try {
-        next = await api.submit(id, code);
-      } catch (requestError) {
-        if (!isMissingSession(requestError)) throw requestError;
-        await recoverExercise(view?.target_skill ?? null, actionNavigationId);
+  const applyCompletedTurn = async (next: TutorView) => {
+    setView(next);
+    setCode(settledView(next) ? next.problem?.starter_code ?? "" : "");
+    setSubmissionNotice(null);
+    setHints([]);
+    setShown(0);
+    setTurnPhase("idle");
+    try {
+      setPlan(await api.plan(id));
+    } catch (requestError) {
+      presentError(requestError);
+    }
+  };
+
+  const pollTurn = async (
+    initial: TutorView | null,
+    startedAt: number,
+    continueOnFailure = false,
+  ) => {
+    let next = initial;
+    let canContinueFailure = continueOnFailure;
+    while (true) {
+      if (next === null) {
+        next = await api.session(id);
+        setView(next);
+      }
+      if (settledView(next) || next.phase === "idle") {
+        await applyCompletedTurn(next);
         return;
       }
+      if (next.phase === "failed") {
+        if (canContinueFailure) {
+          canContinueFailure = false;
+          try {
+            next = await api.continueTurn(id);
+            setView(next);
+          } catch (requestError) {
+            if (!isTurnBusy(requestError)) throw requestError;
+            next = null;
+          }
+          continue;
+        }
+        setView(next);
+        setTurnPhase("failed");
+        return;
+      }
+      if (!shouldKeepPolling(next, startedAt, Date.now())) {
+        setView(next);
+        setTurnPhase("timed-out");
+        return;
+      }
+
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, POLL_INTERVAL_MS);
+      });
+      next = await api.session(id);
       setView(next);
-      setCode(next.problem?.starter_code ?? "");
-      setHints([]);
-      setShown(0);
-      setPlan(await api.plan(id)); // mastery moved, so the plan did too
-    }, setSubmitting);
+    }
+  };
+
+  const submit = () => {
+    if (turnInFlight.current) return;
+    const check = checkSubmission(code);
+    if (!check.ok) {
+      setSubmissionNotice(check.message);
+      editorRef.current?.focus();
+      return;
+    }
+    setSubmissionNotice(null);
+    const actionNavigationId = navigationId.current;
+    const startedAt = Date.now();
+    turnInFlight.current = true;
+    setTurnPhase("running-tests");
+    setError(null);
+
+    return (async () => {
+      try {
+        let next: TutorView;
+        try {
+          next = await api.submit(id, code, { phased: true });
+        } catch (requestError) {
+          if (requestError instanceof ApiError && requestError.status === 422) {
+            setSubmissionNotice(requestError.message);
+            editorRef.current?.focus();
+            setTurnPhase("idle");
+            return;
+          }
+          if (isTurnBusy(requestError)) {
+            setSubmissionNotice(TURN_BUSY_MESSAGE);
+            setTurnPhase("updating-plan");
+            await pollTurn(null, startedAt);
+            return;
+          }
+          if (!isMissingSession(requestError)) throw requestError;
+          await recoverExercise(view?.target_skill ?? null, actionNavigationId);
+          setTurnPhase("idle");
+          return;
+        }
+
+        setView(next);
+        if (next.phase === "updating") {
+          setTurnPhase("updating-plan");
+          await pollTurn(next, startedAt);
+        } else if (next.phase === "failed") {
+          setTurnPhase("failed");
+        } else {
+          await applyCompletedTurn(next);
+        }
+      } catch (requestError) {
+        presentError(requestError);
+        setTurnPhase("idle");
+      } finally {
+        turnInFlight.current = false;
+      }
+    })();
+  };
+
+  const resumeTurn = (checkServerFirst: boolean) => {
+    if (turnInFlight.current) return;
+    const fallbackPhase = turnPhase;
+    const startedAt = Date.now();
+    turnInFlight.current = true;
+    setTurnPhase("updating-plan");
+    setSubmissionNotice(null);
+    setError(null);
+
+    return (async () => {
+      try {
+        let next: TutorView | null = null;
+        try {
+          next = checkServerFirst
+            ? await api.session(id)
+            : await api.continueTurn(id);
+        } catch (requestError) {
+          if (!isTurnBusy(requestError)) throw requestError;
+        }
+
+        if (
+          next === null ||
+          next.phase === "updating" ||
+          (checkServerFirst && next.phase === "failed")
+        ) {
+          await pollTurn(next, startedAt, checkServerFirst);
+        } else if (next.phase === "failed") {
+          setView(next);
+          setTurnPhase("failed");
+        } else {
+          await applyCompletedTurn(next);
+        }
+      } catch (requestError) {
+        presentError(requestError);
+        setTurnPhase(fallbackPhase);
+      } finally {
+        turnInFlight.current = false;
+      }
+    })();
   };
 
   const askForHint = () => {
+    if (turnPhase !== "idle") return;
     const actionNavigationId = navigationId.current;
     return guard(async () => {
       try {
@@ -487,6 +727,7 @@ export default function Page() {
     if (!id) return;
     const requestId = ++navigationId.current;
     setError(null);
+    setSubmissionNotice(null);
     setLoadingTab(next === "learn" ? null : next);
     swap(() => setTab(next));
 
@@ -529,7 +770,8 @@ export default function Page() {
       onTab={changeTab}
       name={displayName}
       email={accountEmail}
-      hasLearner={stage !== "welcome"}
+      identityPending={accountPending || !displayName}
+      hasLearner={stage === "diagnostic" || stage === "app"}
       engine={engine}
       sweeping={sweeping}
     >
@@ -559,6 +801,17 @@ export default function Page() {
         </div>
       )}
 
+      {stage === "resuming" && (
+        <div className="hero" aria-busy="true">
+          <div className="skeleton skeleton-heading" aria-hidden="true" />
+          <div className="feature-grid" aria-hidden="true">
+            <div className="skeleton skeleton-card" />
+            <div className="skeleton skeleton-card" />
+          </div>
+          <p className="muted" role="status">Loading your learning plan…</p>
+        </div>
+      )}
+
       {stage === "welcome" && (
         <div className="hero">
           <div className="hero-pill">AI Tutor</div>
@@ -580,7 +833,9 @@ export default function Page() {
           </div>
 
           <div className="name-block">
-            <p className="welcome-account">Signed in as <strong>{displayName}</strong></p>
+            {displayName && (
+              <p className="welcome-account">Signed in as <strong>{displayName}</strong></p>
+            )}
             <p className="muted">{accountEmail}</p>
             {hasLanguagePicker && (
               <div className="language-picker">
@@ -655,17 +910,23 @@ export default function Page() {
             <p className="desc" style={{ whiteSpace: "pre-wrap" }}>{step.prompt}</p>
             <CodeEditor
               value={code}
-              onChange={setCode}
+              onChange={editCode}
               ariaLabel="Diagnostic answer"
+              ref={editorRef}
+              invalid={submissionNotice !== null}
+              describedBy={submissionNotice ? "submission-notice" : undefined}
             />
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn" onClick={() => answer(code)} disabled={actionBusy}>
+              <button className="btn" onClick={submitDiagnostic} disabled={actionBusy}>
                 {actionBusy ? "Checking…" : "Submit"}
               </button>
               <button className="btn ghost" onClick={() => answer("")} disabled={actionBusy}>
                 I don&apos;t know this one
               </button>
             </div>
+            {submissionNotice && (
+              <p id="submission-notice" className="err" role="alert">{submissionNotice}</p>
+            )}
           </div>
         </div>
       )}
@@ -684,7 +945,7 @@ export default function Page() {
               </p>
             )}
             <p className="muted">
-              Confidence in this picture: {(step.confidence * 100).toFixed(0)}%
+              Confidence in this picture: {percent(step.confidence)}
             </p>
             <button className="btn" onClick={enterApp} disabled={actionBusy} style={{ marginTop: 10 }}>
               See my plan
@@ -711,7 +972,7 @@ export default function Page() {
               onHint={askForHint}
               hints={hints.slice(0, shown)}
               exhausted={shown > 0 && shown >= hints.length}
-              busy={actionBusy || loadingTab === "plan"}
+              busy={actionBusy || loadingTab === "plan" || turnPhase !== "idle"}
             />
           ) : loadingTab === "plan" ? (
             <LoadingView message="Loading your plan…" />
@@ -724,7 +985,7 @@ export default function Page() {
       {stage === "app" && tab === "learn" && (
         <div
           className="view-region"
-          aria-busy={beginningSkill !== null || submitting}
+          aria-busy={beginningSkill !== null || turnPhase !== "idle"}
         >
           {beginningSkill ? (
             <>
@@ -739,14 +1000,17 @@ export default function Page() {
             <Learn
               view={view}
               code={code}
-              setCode={setCode}
+              setCode={editCode}
+              submissionNotice={submissionNotice}
+              editorRef={editorRef}
               onSubmit={submit}
               onHint={askForHint}
               hints={hints.slice(0, shown)}
               exhausted={shown > 0 && shown >= hints.length}
-              submitting={submitting}
+              turnPhase={turnPhase}
               hintBusy={actionBusy}
-              showSubmitProgress={slowTutorAction === "submit"}
+              onRetryTurn={() => resumeTurn(false)}
+              onCheckTurn={() => resumeTurn(true)}
               languages={languageOptions}
             />
           )}
@@ -759,7 +1023,11 @@ export default function Page() {
             <p className="view-updating" role="status">Updating…</p>
           )}
           {progress ? (
-            <DetailView events={view?.events ?? []} progress={progress} />
+            <DetailView
+              activity={view?.activity ?? []}
+              events={view?.events}
+              progress={progress}
+            />
           ) : loadingTab === "detail" ? (
             <LoadingView message="Loading session detail…" />
           ) : (
@@ -968,10 +1236,10 @@ function StatRow({
         <b>{plan.counts.done}/{plan.counts.total}</b>
         <small>{plan.counts.total - plan.counts.done} still open</small>
       </div>
-      <div className="stat academic-stat maybe" title="Answered well once — not confirmed yet">
+      <div className="stat academic-stat maybe" title="Looks good, not confirmed yet">
         <span>LOOKS GOOD</span>
         <b>{plan.counts.provisional}</b>
-        <small>answered once, not confirmed</small>
+        <small>not confirmed yet</small>
       </div>
       <div className="stat academic-stat">
         <span>ATTEMPTS</span>
@@ -1006,9 +1274,8 @@ function FocusCard({
   onStart: () => void;
   busy: boolean;
 }) {
-  const unmeasured = skill.state === "unmeasured";
-  const blocked =
-    skill.state === "locked" || skill.not_measured_because !== null;
+  const unmeasured = !skill.measured;
+  const blocked = skill.state === "locked";
   const demand =
     active && view?.target_skill === skill.skill && view.difficulty_change?.demands
       ? view.difficulty_change.demands
@@ -1020,18 +1287,18 @@ function FocusCard({
         <p className="breadcrumb">{active ? "CURRENT FOCUS" : "NEXT UP"}</p>
         <h2 id="focus-title">{pretty(skill.skill)}</h2>
         <p className="sub">{demand}</p>
-        {unmeasured && skill.not_measured_because !== null ? (
+        {blocked && skill.not_measured_because !== null ? (
           <p className="muted">{notMeasuredLabel(skill.not_measured_because)}</p>
-        ) : skill.state === "locked" && skill.blocked_by.length > 0 ? (
+        ) : blocked && skill.blocked_by.length > 0 ? (
           <p className="muted">Waiting on {skill.blocked_by.map(pretty).join(", ")}</p>
         ) : null}
       </div>
       <div className="focus-meter">
         <span className={`chip ${skill.state === "completed" ? "done" : skill.state === "provisional" ? "maybe" : ""}`}>
-          {unmeasured ? "Not checked yet" : skill.state}
+          {skill.state}
         </span>
         <strong>
-          {skill.mastery === null ? "Not checked yet" : `${(skill.mastery * 100).toFixed(0)}%`}
+          {skill.mastery === null ? "Not checked yet" : percent(skill.mastery)}
         </strong>
         <small className="muted">{unmeasured ? "no measurement yet" : "mastery estimate"}</small>
         {!blocked && (
@@ -1138,7 +1405,7 @@ function RecentActivityPanel({ progress }: { progress: Progress }) {
           <div className="row" style={{ justifyContent: "space-between" }}>
             <span className="kind">{pretty(a.skill)}</span>
             <span className="when">
-              {a.mastery_before.toFixed(2)} → {a.mastery_after.toFixed(2)}
+              {percent(a.mastery_before)} → {percent(a.mastery_after)}
             </span>
           </div>
           <p>{a.outcome.replace(/_/g, " ").toLowerCase()}</p>
@@ -1152,25 +1419,31 @@ function Learn({
   view,
   code,
   setCode,
+  submissionNotice,
+  editorRef,
   onSubmit,
   onHint,
   hints,
   exhausted,
-  submitting,
+  turnPhase,
   hintBusy,
-  showSubmitProgress,
+  onRetryTurn,
+  onCheckTurn,
   languages,
 }: {
   view: TutorView | null;
   code: string;
   setCode: (v: string) => void;
+  submissionNotice: string | null;
+  editorRef: Ref<CodeEditorHandle>;
   onSubmit: () => void;
   onHint: () => void;
   hints: string[];
   exhausted: boolean;
-  submitting: boolean;
+  turnPhase: TurnPhase;
   hintBusy: boolean;
-  showSubmitProgress: boolean;
+  onRetryTurn: () => void;
+  onCheckTurn: () => void;
   languages: LanguageOption[];
 }) {
   if (!view) {
@@ -1190,15 +1463,15 @@ function Learn({
     runningLanguage && defaultLanguageValue && runningLanguage.value !== defaultLanguageValue
       ? runningLanguage.label
       : null;
-  const controlsBusy = submitting || hintBusy;
+  const activePhaseLabel = phaseLabel(turnPhase);
+  const controlsBusy = turnPhase !== "idle" || hintBusy;
   return (
     <div className="columns">
       <section>
         {/* Our failure is never shown as the student's mistake. */}
         {/* A student moved to a harder problem with no explanation has been handed a
             harder problem for no visible reason, which reads as the system being
-            arbitrary. The reason shown here is the policy guard's own, carried through
-            unchanged. */}
+            arbitrary. Only the ladder-derived learner explanation belongs here. */}
         {view.difficulty_change && (
           <div className={`note ${view.difficulty_change.direction === "up" ? "info" : "warn"}`}>
             <strong>
@@ -1206,11 +1479,15 @@ function Learn({
                 ? `Difficulty increased: ${view.difficulty_change.from} → ${view.difficulty_change.to}`
                 : `Difficulty adjusted: ${view.difficulty_change.from} → ${view.difficulty_change.to}`}
             </strong>
-            {view.difficulty_change.student_reason ?? view.difficulty_change.reason}
-            {view.difficulty_change.concepts.length > 0 && (
-              <span className="muted" style={{ display: "block", marginTop: 6 }}>
-                Now testing: {view.difficulty_change.concepts.map((c) => c.replace(/_/g, " ")).join(", ")}
-              </span>
+            {view.difficulty_change.student_reason && (
+              <>
+                {view.difficulty_change.student_reason}
+                {view.difficulty_change.concepts.length > 0 && (
+                  <span className="muted" style={{ display: "block", marginTop: 6 }}>
+                    Now testing: {view.difficulty_change.concepts.map((c) => c.replace(/_/g, " ")).join(", ")}
+                  </span>
+                )}
+              </>
             )}
           </div>
         )}
@@ -1249,7 +1526,7 @@ function Learn({
           </div>
         )}
 
-        {view.problem && view.awaiting_student ? (
+        {view.problem && (view.awaiting_student || turnPhase !== "idle") ? (
           <div className="card">
             <div className="top">
               <h1 className="exercise-title">{view.problem.title}</h1>
@@ -1268,19 +1545,44 @@ function Learn({
               value={code}
               onChange={setCode}
               ariaLabel="Exercise answer"
+              ref={editorRef}
+              invalid={submissionNotice !== null}
+              describedBy={submissionNotice ? "submission-notice" : undefined}
             />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={onSubmit} disabled={controlsBusy}>
-                {submitting ? "Running…" : "Submit"}
+                {activePhaseLabel ?? "Submit"}
               </button>
               <button className="btn ghost" onClick={onHint} disabled={controlsBusy || exhausted}>
                 {exhausted ? "No more hints" : "I'm stuck — give me a hint"}
               </button>
             </div>
-            {showSubmitProgress && (
+            {submissionNotice && (
+              <p id="submission-notice" className="err" role="alert">{submissionNotice}</p>
+            )}
+            {activePhaseLabel && (
               <p className="tutor-progress-note" role="status">
-                Checking your answer…
+                {activePhaseLabel}
               </p>
+            )}
+            {turnPhase === "failed" && (
+              <div className="row err" role="alert">
+                <span>
+                  {view.phase_error ??
+                    "We couldn't finish updating your plan. Your answer was saved."}
+                </span>
+                <button type="button" className="btn ghost" onClick={onRetryTurn}>
+                  Try again
+                </button>
+              </div>
+            )}
+            {turnPhase === "timed-out" && (
+              <div className="row err" role="alert">
+                <span>{TURN_TIMEOUT_MESSAGE}</span>
+                <button type="button" className="btn ghost" onClick={onCheckTurn}>
+                  Check again
+                </button>
+              </div>
             )}
 
             {hints.map((hint, i) => (
@@ -1340,7 +1642,7 @@ function Learn({
                     {pretty(skill)}
                   </span>
                   <span className="muted">
-                    {measured ? value.toFixed(2) : "not checked yet"}
+                    {measured ? percent(value) : "not checked yet"}
                   </span>
                 </div>
                 <div className="bar">
@@ -1353,9 +1655,7 @@ function Learn({
                 </div>
                 {measured && (
                   <div className="muted" style={{ fontSize: ".78rem", marginTop: 3 }}>
-                    {confidence >= 0.5
-                      ? `confident · ${confidence.toFixed(2)}`
-                      : `still checking · ${confidence.toFixed(2)}`}
+                    {percent(confidence)} confidence
                   </div>
                 )}
               </div>
@@ -1387,24 +1687,18 @@ function measuredSummary(
   attempts: number,
 ) {
   if (mastery === null || confidence === null) return null;
-  return `${(mastery * 100).toFixed(0)}% estimated · ${(confidence * 100).toFixed(0)}% confidence · ${attempts} attempt${attempts === 1 ? "" : "s"}`;
+  return `${beliefLine(mastery, confidence)} · ${attempts} attempt${attempts === 1 ? "" : "s"}`;
 }
 
-/* The tutor's own working notes, kept off every student-facing screen.
- *
- * This was previously a permanent right-hand panel on the learning plan, which meant a
- * learner opening the app was shown problem_id=d7f3d5800286, teaching_mode=TEXTUAL,
- * before=0.2444, and a paragraph beginning "The student believes that...". Telemetry
- * addressed to a developer, and a diagnosis written about them in the third person.
- *
- * None of it is deleted, because it is the best evidence this system has that its
- * decisions are reasoned rather than random -- it just belongs somewhere a student
- * chooses to go, framed as what it is. */
+/* Learner-facing notes and activity are projected by the server and contain only the
+ * reviewed explanations that help someone understand what the tutor did next. */
 function DetailView({
+  activity,
   events,
   progress,
 }: {
-  events: TutorEvent[];
+  activity: LearnerActivity[];
+  events?: TutorEvent[];
   progress: Progress | null;
 }) {
   const open = (progress?.skills ?? []).flatMap((s) =>
@@ -1419,16 +1713,14 @@ function DetailView({
       <section>
         <h1>Session detail</h1>
         <p className="sub" style={{ marginBottom: 18 }}>
-          The tutor&apos;s working notes. These are written for diagnosis rather than as
-          feedback, so they talk about you in the third person — that is why they live
-          here and not on your plan.
+          What the tutor noticed in your code, and what it did next.
         </p>
 
-        <h2 style={{ margin: "18px 0 10px" }}>What it diagnosed</h2>
+        <h2 style={{ margin: "18px 0 10px" }}>What it noticed</h2>
         {open.length === 0 && past.length === 0 && (
           <div className="note">
-            Nothing diagnosed yet. Notes appear here after the tutor has seen enough of
-            your work to have an opinion about it.
+            Nothing to show yet. Notes appear here once the tutor has seen enough of your
+            work.
           </div>
         )}
         {open.map((m, i) => (
@@ -1445,7 +1737,7 @@ function DetailView({
         ))}
       </section>
 
-      <ActivityPanel events={events} />
+      <ActivityPanel activity={activity} events={events} />
     </div>
   );
 }
@@ -1574,7 +1866,7 @@ function ProgressView({ progress, activity }: { progress: Progress; activity: Ac
             <div className="row" style={{ justifyContent: "space-between" }}>
               <span className="kind">{pretty(a.skill)}</span>
               <span className="when">
-                {a.mastery_before.toFixed(2)} → {a.mastery_after.toFixed(2)}
+                {percent(a.mastery_before)} → {percent(a.mastery_after)}
               </span>
             </div>
             <p>{a.outcome.replace(/_/g, " ").toLowerCase()}</p>

@@ -37,6 +37,7 @@ from langgraph.types import Command  # noqa: E402
 from app.graph.builder import build_graph  # noqa: E402
 from app.graph.deps import GraphDeps  # noqa: E402
 from app.graph.state import initial_state  # noqa: E402
+from app.models.submission import EMPTY_SUBMISSION_MESSAGE, is_blank_submission  # noqa: E402
 from app.rag.retriever import Retriever  # noqa: E402
 from app.services.demo_runner import DEMO_SEED, Behaviour, run_demo, seed_student  # noqa: E402
 from app.services.events import EventLog, EventType  # noqa: E402
@@ -132,6 +133,15 @@ def start_session(target: str) -> tuple[dict, str, str, str, list[list[Any]]]:
 def submit_code(session: dict | None, code: str) -> tuple[dict | None, str, str, str, list[list[Any]]]:
     if not session:
         return session, "Start a session first.", "", "", []
+    if is_blank_submission(code):
+        header, status, events, mastery = _session_view(session)
+        return (
+            session,
+            f"{EMPTY_SUBMISSION_MESSAGE}\n\n{header}",
+            status,
+            events,
+            mastery,
+        )
     session["graph"].invoke(Command(resume={"code": code}), session["cfg"])
     return (session, *_session_view(session))
 

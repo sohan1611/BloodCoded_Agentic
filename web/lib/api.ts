@@ -9,6 +9,9 @@
  */
 
 import { authClient } from "@/lib/auth/client";
+import type { Confirmation } from "./format";
+
+export type { Confirmation } from "./format";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const JWT_REFRESH_WINDOW_SECONDS = 60;
@@ -412,6 +415,12 @@ export type Health = {
   languages?: LanguageOption[];
 };
 
+export type Me = {
+  student_id: string;
+  exists: boolean;
+  needs_diagnostic: boolean;
+};
+
 export type SessionStart = {
   student_id: string;
   returning: boolean;
@@ -445,18 +454,66 @@ export type TutorEvent = {
   evidence: string[];
 };
 
+export type LearnerActivity =
+  | {
+      type: "generated";
+      skill: string;
+      title: string;
+      difficulty: string;
+    }
+  | {
+      type: "execution";
+      passed: boolean;
+      score: number;
+    }
+  | {
+      type: "misconception";
+      skill: string;
+      note: string;
+    }
+  | {
+      type: "resolved";
+      skill: string;
+      count: number;
+    }
+  | {
+      type: "mastery";
+      skill: string;
+      before: number;
+      after: number;
+      attributed_from: string | null;
+    }
+  | {
+      type: "adaptation";
+      skill: string;
+      action: string;
+    }
+  | {
+      type: "prereq_redirect";
+      from_skill: string;
+      to_skill: string;
+    }
+  | {
+      type: "prereq_return";
+      skill: string;
+    }
+  | { type: "recovery" }
+  | { type: "session_end" };
+
 export type TutorView = {
   student_id: string;
   name: string;
   awaiting_student: boolean;
   suspended_at: string | null;
+  phase: "idle" | "updating" | "failed";
+  phase_error: string | null;
   problem: {
     title: string | null;
     prompt: string | null;
     starter_code: string;
     expected_output: string;
     assessment_type: string | null;
-    grounded_in: string[];
+    grounded_in?: string[];
   } | null;
   feedback: {
     passed: boolean | null;
@@ -467,7 +524,7 @@ export type TutorView = {
     was_our_fault: boolean;
   } | null;
   target_skill: string | null;
-  /** Confidence per skill: how much evidence stands behind each mastery estimate. */
+  /** Evidence strength per skill; it rises only with valid evidence and is not a probability of being right. */
   confidence: Record<string, number>;
   /** Skills we have actually observed. Anything absent is a prior, not a measurement. */
   measured: string[];
@@ -492,7 +549,8 @@ export type TutorView = {
     demands: string | null;
     concepts: string[];
   } | null;
-  events: TutorEvent[];
+  activity: LearnerActivity[];
+  events?: TutorEvent[];
 };
 
 export type PlanSkill = {
@@ -500,13 +558,20 @@ export type PlanSkill = {
   /** Decided by the ENGINE. The UI must never recompute this: whether a skill is
    *  locked is a prerequisite judgement, and this system exists to make those.
    *
-   *  "provisional" is mastery without the evidence to trust it -- one right answer puts
-   *  BKT at 0.85 mastery on 0.22 confidence, which the guard will not ADVANCE on. Shown
-   *  as its own thing because calling it "completed" told students they had finished
-   *  five topics they had answered one question about. */
-  state: "unmeasured" | "completed" | "provisional" | "locked" | "available";
+   *  "provisional" is mastery that internal certainty has not confirmed -- one right
+   *  answer puts BKT at 0.85 mastery on 0.22 certainty, which the guard will not ADVANCE
+   *  on. Shown as its own thing because calling it "completed" told students they had
+   *  finished five topics they had answered one question about. */
+  state: "completed" | "provisional" | "available" | "locked";
+  /** Whether this skill has any student evidence. Measurement is independent of the
+   *  navigation state: a new learner's Variables is unmeasured and available. */
+  measured: boolean;
+  /** Stable one-based position in the engine's curriculum order. */
+  position: number;
   mastery: number | null;
+  /** Evidence strength; it rises only with valid evidence and is not a probability of being right. */
   confidence: number | null;
+  confirmation: Confirmation | null;
   attempts: number;
   prerequisites: string[];
   blocked_by: string[];
@@ -523,8 +588,10 @@ export type Plan = {
     total: number;
     done: number;
     provisional: number;
+    available: number;
+    locked: number;
+    unlocked: number;
     unmeasured: number;
-    upcoming: number;
   };
   skills: PlanSkill[];
   total_attempts: number;
@@ -539,12 +606,14 @@ export type Progress = {
     skill: string;
     /** Decided by the ENGINE, from the same predicate as the learning plan. No
      *  threshold comparison belongs in this file: a client that decides for itself
-     *  whether 0.85-at-0.22 counts as mastered is how the plan came to award five
-     *  "Completed" topics the guard would never have advanced on. "locked" is absent
+     *  whether 0.85 mastery at 0.22 certainty counts as mastered is how the plan came
+     *  to award five "Completed" topics the guard would never have advanced on. "locked" is absent
      *  because it is a routing judgement, and this screen is about belief. */
     state: "unmeasured" | "completed" | "provisional" | "unproven";
     mastery: number | null;
+    /** Evidence strength; it rises only with valid evidence and is not a probability of being right. */
     confidence: number | null;
+    confirmation: Confirmation | null;
     attempts: number;
     not_measured_because: string | null;
     misconceptions: string[];
@@ -578,6 +647,8 @@ export const api = {
   health: (signal?: AbortSignal) =>
     request<Health>("/health", { signal }, HEALTH_TIMEOUT_MS),
 
+  me: () => request<Me>("/me"),
+
   startSession: (name: string, language?: string) =>
     request<SessionStart>("/session", {
       method: "POST",
@@ -599,11 +670,16 @@ export const api = {
       body: JSON.stringify({ name, target_skill: targetSkill ?? null }),
     }, TUTOR_TIMEOUT_MS),
 
-  submit: (id: string, code: string) =>
+  submit: (id: string, code: string, options?: { phased?: boolean }) =>
     request<TutorView>(`/session/${id}/submit`, {
       method: "POST",
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, phased: options?.phased ?? false }),
     }, TUTOR_TIMEOUT_MS),
+
+  continueTurn: (id: string) =>
+    request<TutorView>(`/session/${id}/continue`, { method: "POST" }, TUTOR_TIMEOUT_MS),
+
+  session: (id: string) => request<TutorView>(`/session/${id}`),
 
   /** Asking for help submits nothing and moves no mastery. The draft is sent
    *  because an unfinished attempt says more about where someone is stuck than

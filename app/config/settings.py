@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     sandbox: Literal["subprocess", "docker"] = "subprocess"
     replay_cache: bool = True
     primary_provider: str = "offline"
+    # When true, the API also returns the raw event trail and retrieval sources, for
+    # development and administration; production leaves it unset.
+    expose_diagnostics: bool = False
 
 
 @lru_cache(maxsize=1)

@@ -448,3 +448,85 @@ def test_error_summary_drops_our_stack_frames() -> None:
     assert summary == "NameError: name 'tota' is not defined"
     assert "sandbox_runner" not in summary
     assert _error_summary("") == ""
+
+
+def test_unmatched_failure_feedback_is_a_nonempty_question_without_model_voice() -> None:
+    from app.mastery.misconceptions import student_feedback_for
+
+    for outcome in StudentOutcome:
+        if outcome is StudentOutcome.CORRECT:
+            continue
+        for summary in ("", "ZeroDivisionError: division by zero"):
+            note = student_feedback_for(None, outcome, summary, "print('attempt')")
+            assert note
+            assert note.endswith("?")
+            assert "The student" not in note
+            assert "believe" not in note
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        StudentOutcome.STUDENT_RUNTIME_ERROR,
+        StudentOutcome.STUDENT_SYNTAX_ERROR,
+    ],
+)
+def test_student_error_feedback_includes_the_available_summary(
+    outcome: StudentOutcome,
+) -> None:
+    from app.mastery.misconceptions import student_feedback_for
+
+    summary = "ZeroDivisionError: division by zero"
+    assert summary in student_feedback_for(None, outcome, summary, "1 / 0")
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        StudentOutcome.STUDENT_RUNTIME_ERROR,
+        StudentOutcome.STUDENT_SYNTAX_ERROR,
+    ],
+)
+@pytest.mark.parametrize("summary", ["Example error.", "Example error:"])
+def test_student_error_feedback_does_not_double_summary_punctuation(
+    outcome: StudentOutcome,
+    summary: str,
+) -> None:
+    from app.mastery.misconceptions import student_feedback_for
+
+    note = student_feedback_for(None, outcome, summary, "bad code")
+    for doubled in (". .", "..", ":.", ": ."):
+        assert doubled not in note
+
+
+def test_correct_without_a_pattern_has_no_failure_feedback() -> None:
+    from app.mastery.misconceptions import student_feedback_for
+
+    assert student_feedback_for(None, StudentOutcome.CORRECT, "", "print(1)") == ""
+
+
+def test_matched_feedback_is_exactly_the_patterns_student_note() -> None:
+    from app.mastery.misconceptions import student_feedback_for, student_note_for
+
+    name_error = next(pattern for pattern in PATTERNS if pattern.key == "name_error")
+    code = "print(x)"
+    assert student_feedback_for(
+        name_error,
+        StudentOutcome.STUDENT_RUNTIME_ERROR,
+        "NameError: name 'x' is not defined",
+        code,
+    ) == student_note_for(name_error, code)
+
+
+def test_student_feedback_boundary_accepts_no_model_output() -> None:
+    """A model-output parameter would reopen the leak, so this guard must fail loudly."""
+    import inspect
+
+    from app.mastery.misconceptions import student_feedback_for
+
+    assert set(inspect.signature(student_feedback_for).parameters) == {
+        "found",
+        "outcome",
+        "error_summary",
+        "code",
+    }

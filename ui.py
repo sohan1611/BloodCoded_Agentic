@@ -35,6 +35,7 @@ from app.mastery.misconceptions import hints_for  # noqa: E402
 from app.mastery.policy import MASTERY_THRESHOLD  # noqa: E402
 from app.mastery.skill_graph import SkillGraph  # noqa: E402
 from app.models.enums import StudentOutcome  # noqa: E402
+from app.models.submission import EMPTY_SUBMISSION_MESSAGE, is_blank_submission  # noqa: E402
 from app.rag.retriever import Retriever  # noqa: E402
 from app.services.demo_runner import (  # noqa: E402
     DEMO_SEED,
@@ -658,8 +659,13 @@ else:
                     key=code_key,
                 )
                 if st.button("Submit", type="primary"):
-                    st.session_state["state"] = app.invoke(Command(resume={"code": code}), cfg)
-                    st.rerun()
+                    if is_blank_submission(code):
+                        st.warning(EMPTY_SUBMISSION_MESSAGE)
+                    else:
+                        st.session_state["state"] = app.invoke(
+                            Command(resume={"code": code}), cfg
+                        )
+                        st.rerun()
             else:
                 st.success(
                     f"🏁 Session {values.get('session_status', 'finished')} "

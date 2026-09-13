@@ -4,6 +4,7 @@ Invariant: edge (A -> B) means "A is a prerequisite of B"; prerequisites of X ar
 list(graph.predecessors(X)).
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
@@ -57,6 +58,30 @@ class SkillGraph:
         """Expose a copy of the skill-node mapping."""
 
         return dict(self._nodes)
+
+    def curriculum_order(self, rank: Mapping[str, int] | None = None) -> list[str]:
+        """Return a deterministic topological order, using curriculum rank for ties.
+
+        A rank is needed because nodes loaded from the store do not arrive in curriculum
+        order, so callers with that context pass the order declared in ``skills.yaml``.
+        Without an explicit rank, the insertion order of the nodes used to build this
+        graph is the curriculum rank.
+        """
+
+        if rank is None:
+            effective_rank = {name: index for index, name in enumerate(self._nodes)}
+        else:
+            unranked = max(rank.values(), default=-1) + 1
+            effective_rank = {
+                name: rank[name] if name in rank else unranked
+                for name in self._nodes
+            }
+        return list(
+            nx.lexicographical_topological_sort(
+                self._graph,
+                key=lambda name: (effective_rank[name], name),
+            )
+        )
 
     def prerequisites(self, skill: str) -> list[str]:
         """Return direct prerequisites for a skill in deterministic order."""

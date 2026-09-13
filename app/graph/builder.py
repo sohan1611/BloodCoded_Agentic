@@ -24,6 +24,7 @@ from app.graph.deps import GraphDeps
 from app.graph.state import AgentState
 from app.mastery import policy
 from app.models.enums import AdaptationAction, SessionStatus, is_student_evidence
+from app.models.submission import is_blank_submission
 
 
 # ---------------------------------------------------------------- routers
@@ -41,6 +42,15 @@ def route_evidence(state: AgentState) -> Literal["update_mastery", "recover"]:
         return "update_mastery" if is_student_evidence(StudentOutcome(raw)) else "recover"
     except ValueError:
         return "recover"
+
+
+def route_submission(state: AgentState) -> str:
+    """Wait for the student again when both submission fields are blank."""
+    if is_blank_submission(state.get("student_code")) and is_blank_submission(
+        state.get("student_answer")
+    ):
+        return "await_student"
+    return "execute_and_grade"
 
 
 def route_next(state: AgentState) -> Literal["continue", "finalize"]:
@@ -98,7 +108,11 @@ def build_graph(deps: GraphDeps, checkpointer=None):
     )
     g.add_edge("retrieve", "generate_problem")
     g.add_edge("generate_problem", "await_student")
-    g.add_edge("await_student", "execute_and_grade")
+    g.add_conditional_edges(
+        "await_student",
+        route_submission,
+        {"await_student": "await_student", "execute_and_grade": "execute_and_grade"},
+    )
 
     g.add_conditional_edges(
         "execute_and_grade",

@@ -71,6 +71,7 @@ export function Shell({
   onTab,
   name,
   email,
+  identityPending,
   hasLearner,
   engine,
   children,
@@ -80,6 +81,7 @@ export function Shell({
   onTab: (t: Tab) => void;
   name: string;
   email: string;
+  identityPending: boolean;
   hasLearner: boolean;
   engine: EngineStatus;
   children: React.ReactNode;
@@ -229,23 +231,27 @@ export function Shell({
             ))}
           </nav>
 
-          <button
-            ref={headerTriggerRef}
-            type="button"
-            className="who"
-            aria-label="Open learner and engine status"
-            aria-expanded={moreOpen}
-            aria-haspopup="dialog"
-            onClick={() => openMore(headerTriggerRef.current)}
-          >
-            <span className="avatar" aria-hidden>
-              {initials}
-            </span>
-            <span className="who-text">
-              <b>{name}</b>
-              <small>learner</small>
-            </span>
-          </button>
+          {identityPending ? (
+            <span className="who skeleton identity-skeleton" aria-hidden="true" />
+          ) : (
+            <button
+              ref={headerTriggerRef}
+              type="button"
+              className="who"
+              aria-label="Open learner and engine status"
+              aria-expanded={moreOpen}
+              aria-haspopup="dialog"
+              onClick={() => openMore(headerTriggerRef.current)}
+            >
+              <span className="avatar" aria-hidden>
+                {initials}
+              </span>
+              <span className="who-text">
+                <b>{name}</b>
+                <small>learner</small>
+              </span>
+            </button>
+          )}
         </header>
 
         <div className="plate" style={{ viewTransitionName: "plate" }}>

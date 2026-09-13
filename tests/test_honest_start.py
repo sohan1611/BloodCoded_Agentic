@@ -143,7 +143,15 @@ def test_plan_total_attempts_counts_log_rows_not_skill_attempts(
 
     plan = client.get("/student/nila/plan").json()
 
-    assert sum(skill["attempts"] for skill in plan["skills"]) == 40
+    attempts = {skill["skill"]: skill["attempts"] for skill in plan["skills"]}
+    assert attempts["variables"] == 1
+    assert attempts["functions"] == 1
+    assert all(
+        count == 0
+        for skill, count in attempts.items()
+        if skill not in ("variables", "functions")
+    )
+    assert sum(attempts.values()) == 2
     assert plan["total_attempts"] == 2
 
 

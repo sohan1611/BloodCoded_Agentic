@@ -318,3 +318,72 @@ def test_name_mode_stays_compatible(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert missing.status_code == blank.status_code == 422
     assert missing.json()["detail"][0]["loc"] == ["body", "name"]
     assert blank.json()["detail"][0]["loc"] == ["body", "name"]
+
+
+def test_me_is_unavailable_in_name_mode(
+    account_client: tuple[TestClient, str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.main as api
+
+    client, _, _ = account_client
+    monkeypatch.setattr(api, "token_verifier", lambda: None)
+
+    response = client.get("/me")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Accounts are not enabled on this server."
+    }
+
+
+def test_me_does_not_create_a_new_account_learner(
+    account_client: tuple[TestClient, str, Path],
+) -> None:
+    client, token, db = account_client
+
+    response = client.get("/me", headers=_authorization(token))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "student_id": USER_ID,
+        "exists": False,
+        "needs_diagnostic": True,
+    }
+    assert StudentStore(db).exists(USER_ID) is False
+    assert USER_ID not in SESSIONS
+
+
+def test_me_tracks_the_accounts_diagnostic_state(
+    account_client: tuple[TestClient, str, Path],
+) -> None:
+    client, token, _ = account_client
+    headers = _authorization(token)
+
+    assert client.post("/session", json={}, headers=headers).status_code == 200
+    assert client.get("/me", headers=headers).json() == {
+        "student_id": USER_ID,
+        "exists": True,
+        "needs_diagnostic": True,
+    }
+
+    for _ in range(12):
+        question = client.get(
+            f"/session/{USER_ID}/diagnostic", headers=headers
+        ).json()
+        if question["complete"]:
+            break
+        response = client.post(
+            f"/session/{USER_ID}/diagnostic",
+            json={"skill": question["skill"], "code": "print('wrong')"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+    else:
+        pytest.fail("account diagnostic did not complete")
+
+    assert client.get("/me", headers=headers).json() == {
+        "student_id": USER_ID,
+        "exists": True,
+        "needs_diagnostic": False,
+    }

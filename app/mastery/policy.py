@@ -3,6 +3,7 @@
 Invariant: adaptation decisions are pure functions of typed state and fixed limits.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.mastery.skill_graph import SkillGraph
@@ -46,6 +47,28 @@ def is_mastered(mastery: float, confidence: float) -> bool:
     lack of evidence.
     """
     return mastery >= MASTERY_THRESHOLD and confidence >= CONFIDENCE_THRESHOLD
+
+
+def roadmap_state(node: SkillNode, blocking: Sequence[str]) -> str:
+    """Classify one roadmap card without conflating navigation with measurement."""
+
+    if node.measured and is_mastered(node.mastery, node.confidence):
+        return "completed"
+    if node.measured and node.mastery >= MASTERY_THRESHOLD:
+        # Answered well, but on thin evidence. Checked BEFORE `locked` on purpose:
+        # this student has shown the skill, and the estimate is about them. Refusing
+        # them a topic they just got right, because something upstream is unproven,
+        # would be the tutor arguing with its own observation.
+        return "provisional"
+
+    # Locking is a routing judgement about PREREQUISITES and stays mastery-only,
+    # exactly as the graph and the policy guard compute it. Confidence belongs in the
+    # question beside it -- "has this student finished this?" -- not here, or a
+    # student would be shut out of a topic because the tutor is unsure about
+    # something upstream, which is the tutor's problem and not theirs.
+    if blocking:
+        return "locked"
+    return "available"
 
 # Evidence gates for prerequisite redirects:
 # PREREQ_EVIDENCE_CONFIDENCE prevents the tutor from treating a prior-like

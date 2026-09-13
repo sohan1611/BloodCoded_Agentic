@@ -16,10 +16,12 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from "react";
 
 const externalValue = Annotation.define<boolean>();
 const editorDefaultKeymap = defaultKeymap.filter((binding) => binding.key !== "Escape");
+
+export type CodeEditorHandle = { focus: () => void };
 
 function editorTheme(minHeight: number) {
   return EditorView.theme({
@@ -80,11 +82,17 @@ export function CodeEditor({
   onChange,
   ariaLabel,
   minHeight = 220,
+  ref,
+  invalid = false,
+  describedBy,
 }: {
   value: string;
   onChange: (next: string) => void;
   ariaLabel: string;
   minHeight?: number;
+  ref?: Ref<CodeEditorHandle>;
+  invalid?: boolean;
+  describedBy?: string;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -95,6 +103,10 @@ export function CodeEditor({
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => viewRef.current?.focus(),
+  }), []);
 
   useEffect(() => {
     if (!hostRef.current || viewRef.current) return;
@@ -114,6 +126,8 @@ export function CodeEditor({
         attributes.of(
           EditorView.contentAttributes.of({
             "aria-label": ariaLabel,
+            "aria-invalid": invalid ? "true" : "false",
+            ...(describedBy ? { "aria-describedby": describedBy } : {}),
             spellcheck: "false",
           }),
         ),
@@ -156,11 +170,13 @@ export function CodeEditor({
       effects: attributes.reconfigure(
         EditorView.contentAttributes.of({
           "aria-label": ariaLabel,
+          "aria-invalid": invalid ? "true" : "false",
+          ...(describedBy ? { "aria-describedby": describedBy } : {}),
           spellcheck: "false",
         }),
       ),
     });
-  }, [ariaLabel, attributes]);
+  }, [ariaLabel, attributes, describedBy, invalid]);
 
   useEffect(() => {
     viewRef.current?.dispatch({

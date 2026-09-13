@@ -260,9 +260,21 @@ not calibration — the fitted values were not adopted.
 
 Three of the four parameters have since changed, for a reason unrelated to that study:
 the literature values describe multiple-choice assessment and this system executes
-programs. See §9 of the README. Confidence is also no longer derived from sample size
-alone — it measures whether the evidence *agrees*, because five correct answers and five
-incorrect ones are not equally trustworthy at the same count.
+programs. See §9 of the README.
+
+### Mastery, confidence, certainty
+
+**Mastery** is the BKT ability estimate, from zero to one; the engine and learner see the
+same value. Learner-facing **confidence** is evidence strength,
+`coverage(N) = 1 - e^(-N/3)`, where `N` is the quality-weighted count of graded
+observations. It begins at zero, can only rise when valid evidence arrives, and does not
+move for blank submissions, hints, system faults, or page loads.
+
+Internal **certainty** is `SkillNode.confidence`: coverage multiplied by agreement. The
+policy and `is_mastered()` keep using it because correct/wrong/correct reaches mastery
+0.885 and coverage 0.632 but certainty only 0.369; a coverage-only gate would confirm
+mixed evidence. When certainty blocks confirmation, the learner receives a reason such
+as needing more evidence or consistent answers, never a second number.
 
 ---
 

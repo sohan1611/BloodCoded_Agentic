@@ -171,13 +171,13 @@ def test_plan_states_come_from_the_engine_not_the_client(client: TestClient) -> 
     assert set(states) == {s["skill"] for s in client.get("/skills").json()["skills"]}
     for item in states.values():
         assert item["state"] in {
-            "unmeasured", "completed", "provisional", "locked", "available"
+            "completed", "provisional", "locked", "available"
         }
         if item["state"] == "locked":
             assert item["blocked_by"], "a locked skill must say what is blocking it"
         if item["state"] == "available":
             assert not item["blocked_by"]
-        if item["state"] == "unmeasured":
+        if not item["measured"]:
             assert item["mastery"] is None
             assert item["confidence"] is None
             assert item["not_measured_because"] == (
@@ -188,9 +188,12 @@ def test_plan_states_come_from_the_engine_not_the_client(client: TestClient) -> 
     assert (
         body["counts"]["done"]
         + body["counts"]["provisional"]
-        + body["counts"]["unmeasured"]
-        + body["counts"]["upcoming"]
+        + body["counts"]["available"]
+        + body["counts"]["locked"]
         == body["counts"]["total"]
+    )
+    assert body["counts"]["unlocked"] == (
+        body["counts"]["total"] - body["counts"]["locked"]
     )
 
 
@@ -202,7 +205,7 @@ def test_suggested_next_is_startable_not_merely_weakest(client: TestClient) -> N
     suggested = body["suggested_next"]
     if suggested is not None:
         item = next(s for s in body["skills"] if s["skill"] == suggested)
-        assert item["state"] in ("available", "unmeasured")
+        assert item["state"] == "available"
         assert item["not_measured_because"] is None
 
 
@@ -457,18 +460,19 @@ def test_the_plan_counts_add_up(client: TestClient) -> None:
     """Four counts shown together must partition the curriculum.
 
     Adding "provisional" without touching "upcoming" -- which meant "not completed" --
-    put the middle bucket in two places at once. Unmeasured is now a fourth disjoint
-    bucket, not another synonym for upcoming.
+    put the middle bucket in two places at once. Unmeasured is now an overlay across
+    the navigation states, not another partition bucket.
     """
     plan = _sit_the_diagnostic(client, "rhea")
     counts = plan["counts"]
     assert (
         counts["done"]
         + counts["provisional"]
-        + counts["unmeasured"]
-        + counts["upcoming"]
+        + counts["available"]
+        + counts["locked"]
         == counts["total"]
     )
+    assert counts["unlocked"] == counts["total"] - counts["locked"]
     assert counts["total"] == len(plan["skills"])
 
 
@@ -488,20 +492,25 @@ def test_progress_and_plan_never_disagree_about_one_student(client: TestClient) 
     plan = _sit_the_diagnostic(client, "isha")
     progress = client.get("/student/isha/progress").json()
 
-    plan_state = {s["skill"]: s["state"] for s in plan["skills"]}
+    plan_skill = {s["skill"]: s for s in plan["skills"]}
     progress_state = {s["skill"]: s["state"] for s in progress["skills"]}
-    assert set(plan_state) == set(progress_state), "the two screens list different skills"
+    assert set(plan_skill) == set(
+        progress_state
+    ), "the two screens list different skills"
 
     for skill, standing in progress_state.items():
         if standing in ("completed", "provisional"):
-            assert plan_state[skill] == standing, (
-                f"{skill}: progress says {standing!r}, plan says {plan_state[skill]!r}"
+            assert plan_skill[skill]["state"] == standing, (
+                f"{skill}: progress says {standing!r}, plan says "
+                f"{plan_skill[skill]['state']!r}"
             )
         elif standing == "unmeasured":
-            assert plan_state[skill] == "unmeasured"
+            assert plan_skill[skill]["measured"] is False
+            assert plan_skill[skill]["state"] in ("locked", "available")
         else:
-            assert plan_state[skill] in ("locked", "available"), (
-                f"{skill}: progress says unproven, plan says {plan_state[skill]!r}"
+            assert plan_skill[skill]["state"] in ("locked", "available"), (
+                f"{skill}: progress says unproven, plan says "
+                f"{plan_skill[skill]['state']!r}"
             )
 
 
@@ -657,6 +666,8 @@ def test_a_difficulty_change_arrives_with_its_reason(
 def test_an_unmeasured_student_stays_at_easy_after_repeated_failure(
     client: TestClient,
 ) -> None:
+    from app.services.events import EventType
+
     client.post("/session", json={"name": "Nila"})
     view = client.post(
         "/session/nila/start", json={"name": "Nila", "target_skill": "loops"}
@@ -671,12 +682,410 @@ def test_an_unmeasured_student_stays_at_easy_after_repeated_failure(
         ).json()
 
     adaptations = [
-        event for event in view["events"] if event["type"] == "adaptation"
+        event
+        for event in SESSIONS["nila"].events.events
+        if event.event_type == EventType.ADAPTATION
     ]
-    assert adaptations[-1]["payload"]["action"] == "EXPLAIN_DIFFERENTLY"
+    assert adaptations[-1].payload["action"] == "EXPLAIN_DIFFERENTLY"
     assert all(
-        event["payload"]["action"] != "STEP_DOWN_DIFFICULTY"
+        event.payload["action"] != "STEP_DOWN_DIFFICULTY"
         for event in adaptations
     )
     assert view["difficulty"] == "EASY"
     assert view["difficulty_change"] is None
+
+
+def test_blank_submissions_are_rejected_without_touching_session_or_student_state(
+    client: TestClient,
+) -> None:
+    from app.models.submission import EMPTY_SUBMISSION_MESSAGE
+
+    client.post("/session", json={"name": "Blank"})
+    started = client.post(
+        "/session/blank/start", json={"name": "Blank", "target_skill": "loops"}
+    )
+    assert started.status_code == 200
+
+    session = SESSIONS["blank"]
+    snapshot = session.graph.get_state(session.cfg)
+    baseline_event_count = len(session.events.events)
+    baseline_attempt_count = snapshot.values["attempt_count"]
+    baseline_problem_id = snapshot.values["current_problem_id"]
+    baseline_attempts = session.store.attempts_for("blank")
+    baseline_skills = {
+        skill: node.model_dump()
+        for skill, node in session.store.load_skills("blank").items()
+    }
+    baseline_activity_total = client.get("/student/blank/activity").json()["total"]
+    baseline_plan_attempts = client.get("/student/blank/plan").json()["total_attempts"]
+    baseline_progress_attempts = client.get("/student/blank/progress").json()[
+        "total_attempts"
+    ]
+
+    for code in ("", "   ", "\n\t  \n"):
+        response = client.post("/session/blank/submit", json={"code": code})
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == EMPTY_SUBMISSION_MESSAGE
+        snapshot = session.graph.get_state(session.cfg)
+        assert len(session.events.events) == baseline_event_count
+        assert snapshot.values["attempt_count"] == baseline_attempt_count
+        assert snapshot.values["current_problem_id"] == baseline_problem_id
+        assert session.store.attempts_for("blank") == baseline_attempts
+        assert {
+            skill: node.model_dump()
+            for skill, node in session.store.load_skills("blank").items()
+        } == baseline_skills
+        assert client.get("/student/blank/activity").json()["total"] == (
+            baseline_activity_total
+        )
+        assert client.get("/student/blank/plan").json()["total_attempts"] == (
+            baseline_plan_attempts
+        )
+        assert client.get("/student/blank/progress").json()["total_attempts"] == (
+            baseline_progress_attempts
+        )
+
+    assert client.post(
+        "/session/blank/submit", json={"code": "print(1)"}
+    ).status_code == 200
+
+
+CURRICULUM_ORDER = [
+    "variables",
+    "conditionals",
+    "loops",
+    "functions",
+    "function_call_tracing",
+    "recursion",
+    "recursion_tree",
+    "nested_loops",
+]
+
+
+def test_new_learner_plan_is_ordered_and_has_one_available_skill(
+    client: TestClient,
+) -> None:
+    client.post("/session", json={"name": "Roadmap"})
+
+    plan = client.get("/student/roadmap/plan").json()
+
+    assert [skill["skill"] for skill in plan["skills"]] == CURRICULUM_ORDER
+    assert [skill["position"] for skill in plan["skills"]] == list(range(1, 9))
+    assert plan["skills"][0]["skill"] == "variables"
+    assert plan["skills"][0]["state"] == "available"
+    assert plan["skills"][0]["measured"] is False
+    assert all(skill["state"] == "locked" for skill in plan["skills"][1:])
+    assert plan["counts"] == {
+        "total": 8,
+        "done": 0,
+        "provisional": 0,
+        "available": 1,
+        "locked": 7,
+        "unlocked": 1,
+        "unmeasured": 8,
+    }
+    assert plan["suggested_next"] == "variables"
+
+
+def test_skills_endpoint_uses_curriculum_order(client: TestClient) -> None:
+    body = client.get("/skills").json()
+
+    assert [skill["skill"] for skill in body["skills"]] == CURRICULUM_ORDER
+
+
+def _logged_update(
+    skill: str,
+    outcome: object,
+    *,
+    attributed_from: str | None = None,
+):
+    from app.models.schemas import SkillUpdate
+
+    return SkillUpdate(
+        skill=skill,
+        mastery_before=0.5,
+        mastery_after=0.4,
+        confidence_before=0.3,
+        confidence_after=0.4,
+        outcome=outcome,
+        attempts_after=1,
+        attributed_from=attributed_from,
+    )
+
+
+def test_reporting_counts_only_exercise_rows(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from app.models.enums import StudentOutcome
+    from app.services.student_store import StudentStore
+
+    client.post("/session", json={"name": "Metric"})
+    store = StudentStore(tmp_path / "api.db")
+    store.log_attempt(
+        "metric", "seeded-session", _logged_update("loops", StudentOutcome.WRONG_ANSWER)
+    )
+    store.log_attempt(
+        "metric",
+        "seeded-session",
+        _logged_update(
+            "variables",
+            StudentOutcome.WRONG_ANSWER,
+            attributed_from="loops",
+        ),
+    )
+    store.log_attempt(
+        "metric", "seeded-session", _logged_update("loops", StudentOutcome.CORRECT)
+    )
+
+    plan = client.get("/student/metric/plan").json()
+    progress = client.get("/student/metric/progress").json()
+    activity = client.get("/student/metric/activity").json()
+    plan_attempts = {skill["skill"]: skill["attempts"] for skill in plan["skills"]}
+    progress_attempts = {
+        skill["skill"]: skill["attempts"] for skill in progress["skills"]
+    }
+
+    assert plan["total_attempts"] == 2
+    assert progress["total_attempts"] == 2
+    assert activity["total"] == 2
+    assert len(progress["recent_attempts"]) == 2
+    assert sum(plan_attempts.values()) == 2
+    assert sum(progress_attempts.values()) == 2
+    assert plan_attempts["variables"] == 0
+    assert plan_attempts["loops"] == 2
+    assert progress_attempts["variables"] == 0
+    assert progress_attempts["loops"] == 2
+    assert all(row["skill"] != "variables" for row in progress["recent_attempts"])
+    assert all(row["skill"] != "variables" for row in activity["attempts"])
+
+
+def test_two_api_submissions_are_two_reported_attempts(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from app.services.student_store import StudentStore
+
+    client.post("/session", json={"name": "Live"})
+    started = client.post(
+        "/session/live/start", json={"name": "Live", "target_skill": "loops"}
+    )
+    assert started.status_code == 200
+    for code in ("print('wrong')", "print('still wrong')"):
+        response = client.post("/session/live/submit", json={"code": code})
+        assert response.status_code == 200
+
+    rows = StudentStore(tmp_path / "api.db").attempts_for("live")
+    expected = len([row for row in rows if not row["attributed_from"]])
+    plan = client.get("/student/live/plan").json()
+    progress = client.get("/student/live/progress").json()
+    activity = client.get("/student/live/activity").json()
+
+    assert expected == 2
+    assert plan["total_attempts"] == expected
+    assert progress["total_attempts"] == expected
+    assert activity["total"] == expected
+    assert len(progress["recent_attempts"]) == expected
+    assert sum(skill["attempts"] for skill in plan["skills"]) == expected
+    assert sum(skill["attempts"] for skill in progress["skills"]) == expected
+
+
+def test_diagnostic_probes_are_not_reported_as_attempts(client: TestClient) -> None:
+    plan = _sit_the_diagnostic(client, "probe")
+
+    assert plan["total_attempts"] == 0
+    assert all(skill["attempts"] == 0 for skill in plan["skills"])
+
+
+def test_plan_and_progress_expose_coverage_and_confirmation_reason(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from app.mastery.bkt import BKTParams, update_skill
+    from app.mastery.evidence import Observation, coverage
+    from app.models.enums import StudentOutcome
+    from app.services.student_store import StudentStore
+
+    client.post("/session", json={"name": "Evidence"})
+    store = StudentStore(tmp_path / "api.db")
+    params = BKTParams()
+
+    def seed(skill: str, pattern: str):
+        node = store.load_skills("evidence")[skill]
+        for mark in pattern:
+            outcome = (
+                StudentOutcome.CORRECT
+                if mark == "c"
+                else StudentOutcome.WRONG_ANSWER
+            )
+            node, _ = update_skill(
+                node,
+                Observation(outcome=outcome, distinct_expectations=2),
+                params,
+            )
+        store.save_skill("evidence", node)
+        return node
+
+    loops = seed("loops", "wwc")
+    mixed = seed("variables", "cwc")
+    plan = {
+        skill["skill"]: skill
+        for skill in client.get("/student/evidence/plan").json()["skills"]
+    }
+    progress = {
+        skill["skill"]: skill
+        for skill in client.get("/student/evidence/progress").json()["skills"]
+    }
+
+    expected = round(coverage(loops.evidence_weight), 4)
+    assert expected == 0.6321
+    assert plan["loops"]["confidence"] == expected
+    assert progress["loops"]["confidence"] == expected
+    assert expected != round(loops.confidence, 4)
+    assert plan["loops"]["confirmation"] is None
+    assert progress["loops"]["confirmation"] is None
+
+    assert mixed.mastery >= MASTERY_THRESHOLD
+    assert plan["variables"]["confirmation"] == "needs_consistent_answers"
+    assert progress["variables"]["confirmation"] == "needs_consistent_answers"
+    assert plan["variables"]["state"] == "provisional"
+    assert progress["variables"]["state"] == "provisional"
+
+
+def test_api_confidence_only_rises_with_valid_evidence(client: TestClient) -> None:
+    client.post("/session", json={"name": "Monotone"})
+    started = client.post(
+        "/session/monotone/start",
+        json={"name": "Monotone", "target_skill": "loops"},
+    )
+    assert started.status_code == 200
+
+    first_view = client.post(
+        "/session/monotone/submit", json={"code": "print('wrong')"}
+    )
+    assert first_view.status_code == 200
+    first_plan = client.get("/student/monotone/plan").json()
+    first = next(
+        skill["confidence"]
+        for skill in first_plan["skills"]
+        if skill["skill"] == "loops"
+    )
+
+    second_response = client.post(
+        "/session/monotone/submit", json={"code": "print('still wrong')"}
+    )
+    assert second_response.status_code == 200
+    second_view = second_response.json()
+    second_plan = client.get("/student/monotone/plan").json()
+    second = next(
+        skill["confidence"]
+        for skill in second_plan["skills"]
+        if skill["skill"] == "loops"
+    )
+
+    assert first is not None
+    assert second is not None
+    assert second >= first
+
+    blank = client.post("/session/monotone/submit", json={"code": "\n  \t"})
+    assert blank.status_code == 422
+    after_blank = next(
+        skill["confidence"]
+        for skill in client.get("/student/monotone/plan").json()["skills"]
+        if skill["skill"] == "loops"
+    )
+    assert after_blank == second
+    assert second_view["confidence"]["loops"] == second
+
+
+def test_default_view_exposes_only_learner_activity(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("COGNIFLOW_EXPOSE_DIAGNOSTICS", raising=False)
+    get_settings.cache_clear()
+    try:
+        client.post("/session", json={"name": "Presenter"})
+        view = client.post(
+            "/session/presenter/start",
+            json={"name": "Presenter", "target_skill": "loops"},
+        ).json()
+
+        assert isinstance(view["activity"], list)
+        assert "events" not in view
+        assert "grounded_in" not in view["problem"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_plan_and_progress_show_only_reviewed_learner_notes(
+    client: TestClient,
+) -> None:
+    from app.mastery.misconceptions import PATTERNS
+
+    client.post("/session", json={"name": "Notes"})
+    session = SESSIONS["notes"]
+    pattern = next(pattern for pattern in PATTERNS if pattern.key == "name_error")
+    raw = [
+        pattern.label,
+        "The student believes x",
+        "unresolved difficulty with loops",
+    ]
+    node = session.store.load_skills("notes")["loops"].model_copy(
+        update={"misconceptions": raw}
+    )
+    session.store.save_skill("notes", node)
+
+    plan = client.get("/student/notes/plan").json()
+    progress = client.get("/student/notes/progress").json()
+    plan_skill = next(skill for skill in plan["skills"] if skill["skill"] == "loops")
+    progress_skill = next(
+        skill for skill in progress["skills"] if skill["skill"] == "loops"
+    )
+
+    assert plan_skill["misconceptions"] == [pattern.student_note]
+    assert progress_skill["misconceptions"] == [pattern.student_note]
+
+
+def test_diagnostics_flag_restores_raw_events_sources_and_notes(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    from app.mastery.misconceptions import PATTERNS
+
+    monkeypatch.setenv("COGNIFLOW_EXPOSE_DIAGNOSTICS", "true")
+    get_settings.cache_clear()
+    try:
+        client.post("/session", json={"name": "Admin"})
+        session = SESSIONS["admin"]
+        pattern = next(pattern for pattern in PATTERNS if pattern.key == "name_error")
+        raw = [
+            pattern.label,
+            "The student believes x",
+            "unresolved difficulty with loops",
+        ]
+        node = session.store.load_skills("admin")["loops"].model_copy(
+            update={"misconceptions": raw}
+        )
+        session.store.save_skill("admin", node)
+
+        view = client.post(
+            "/session/admin/start",
+            json={"name": "Admin", "target_skill": "loops"},
+        ).json()
+        plan = client.get("/student/admin/plan").json()
+        progress = client.get("/student/admin/progress").json()
+        plan_skill = next(
+            skill for skill in plan["skills"] if skill["skill"] == "loops"
+        )
+        progress_skill = next(
+            skill for skill in progress["skills"] if skill["skill"] == "loops"
+        )
+
+        assert "events" in view
+        assert "grounded_in" in view["problem"]
+        assert plan_skill["misconceptions"] == raw
+        assert progress_skill["misconceptions"] == raw
+    finally:
+        get_settings.cache_clear()

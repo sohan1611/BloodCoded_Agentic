@@ -637,6 +637,57 @@ def student_note_for(pattern: Pattern, code: str | None = None) -> str:
     return pattern.student_note
 
 
+def student_feedback_for(
+    found: Pattern | None,
+    outcome: StudentOutcome,
+    error_summary: str,
+    code: str | None,
+) -> str:
+    """Return feedback based only on deterministic evidence available to the tutor.
+
+    The signature is the guarantee: it accepts no ``MisconceptionAnalysis`` or model
+    output, so this function cannot leak model text it is never given. Do not add such
+    a parameter; that would reopen the student-feedback boundary this function closes.
+    """
+    if found is not None:
+        return student_note_for(found, code)
+
+    summary = error_summary.strip()
+    punctuation = "" if summary.endswith((".", ":", ";", "!", "?")) else "."
+
+    if outcome == StudentOutcome.WRONG_ANSWER:
+        return (
+            "Your program ran, but what it printed doesn't match the expected output. "
+            "Compare the two line by line: where do they first stop matching?"
+        )
+    if outcome == StudentOutcome.STUDENT_RUNTIME_ERROR:
+        if summary:
+            return (
+                f"Python stopped partway through with: {summary}{punctuation} Which line "
+                "was it running at that moment, and what did you expect it to do?"
+            )
+        return (
+            "Python stopped partway through your program. Which line was it running at "
+            "that moment, and what did you expect it to do?"
+        )
+    if outcome == StudentOutcome.STUDENT_SYNTAX_ERROR:
+        if summary:
+            return (
+                f"Python couldn't read your program: {summary}{punctuation} Which line "
+                "does that message point to, and what is missing or extra there?"
+            )
+        return (
+            "Python couldn't read part of your program. Which line looks different "
+            "from how you meant to write it?"
+        )
+    if outcome == StudentOutcome.STUDENT_TIMEOUT:
+        return (
+            "Your program kept running and was stopped for you. What has to change "
+            "inside the loop before it can finish?"
+        )
+    return ""
+
+
 def hints_for(
     skill: str, code: str | None = None, difficulty: str | None = None
 ) -> tuple[str, ...]:
@@ -691,3 +742,16 @@ def _hints_from_rung(skill: str, difficulty: str) -> tuple[str, ...]:
         base[0],
         *base[1:],
     )
+
+
+def learner_note_for(recorded: str) -> str | None:
+    """Return learner-facing wording only for a recognised persisted pattern label.
+
+    Model hypotheses and legacy outage fallbacks were persisted in the same string
+    lists as deterministic diagnoses. Only an exact Pattern label has reviewed learner
+    wording, so every other value stays out of the learner presentation by default.
+    """
+    for pattern in PATTERNS:
+        if recorded == pattern.label:
+            return pattern.student_note
+    return None
