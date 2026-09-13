@@ -111,15 +111,15 @@ export function AuthPage({ children }: { children: ReactNode }) {
           <img
             className="cogniflow-logo cogniflow-logo-light"
             src="/brand/cogniflow-logo-light.jpg"
-            width={512}
-            height={256}
+            width={202}
+            height={184}
             alt="CogniFlow"
           />
           <img
             className="cogniflow-logo cogniflow-logo-dark"
             src="/brand/cogniflow-logo-dark.jpg"
-            width={512}
-            height={254}
+            width={204}
+            height={186}
             alt="CogniFlow"
           />
         </div>

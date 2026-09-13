@@ -475,7 +475,10 @@ textarea:focus-visible {
 }
 
 .cogniflow-logo {
-  height: 36px;
+  /* The mark used to fill only ~71% of the file's height, so a 36px box drew a 26px
+     logo. The assets are cropped to their ink now, so the box IS the mark and these
+     numbers are the size you actually see. */
+  height: 30px;
   width: auto;
   flex: 0 0 auto;
 }
@@ -2004,7 +2007,7 @@ code {
     display: block;
     min-width: auto;
   }
-  .cogniflow-logo { height: 52px; }
+  .cogniflow-logo { height: 44px; }
   .brand-copy { padding-right: 0; }
   .tagline,
   .engine-dot { display: none; }

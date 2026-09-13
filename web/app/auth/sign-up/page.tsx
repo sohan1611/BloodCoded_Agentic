@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useCallback, useState, type FormEvent } from "react";
+import { useClearOnRestore } from "../use-restored-page";
 import { authClient } from "@/lib/auth/client";
 import {
   AuthDivider,
@@ -21,6 +22,10 @@ export default function SignUpPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState<"email" | "google" | null>(null);
+  // Coming back from Google with the browser's back button restores this page
+  // from the bfcache with `pending` still set, which leaves every control
+  // disabled and the form looking frozen. See useClearOnRestore.
+  useClearOnRestore(useCallback(() => setPending(null), []));
   const [error, setError] = useState<SafeAuthError | null>(null);
   useSignedInRedirect();
 
