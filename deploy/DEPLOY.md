@@ -86,10 +86,12 @@ the app.
   `uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1`, `PYTHON_VERSION`
   `3.13.4`. One worker, deliberately: in-flight graph handles live in a dict in that
   process, so a second worker would answer half the requests with "no active session".
-- Vercel: root directory `web`, framework auto-detected. The engine URL is baked into
-  `next.config.mjs` for production builds — it is a public endpoint, not a secret, and a
-  dashboard setting nobody can see is a worse place for it. `NEXT_PUBLIC_API_URL` still
-  overrides.
+- Vercel: root directory `web`, framework auto-detected. In production the browser calls
+  `/engine/*` on the Vercel domain and a rewrite in `next.config.mjs` proxies it to the
+  engine, so the page never makes a cross-site request that a content blocker (Brave
+  Shields, for one) can refuse. The engine URL lives in that file — it is a public
+  endpoint, not a secret. `NEXT_PUBLIC_API_URL` overrides the browser's base and
+  `ENGINE_ORIGIN` overrides the proxy target.
 - CORS on the engine names the Vercel origins and nothing else. It is not access
   control: the API has no authentication, so `curl` still reaches everything. What it
   stops is another page in the student's browser reading their progress.
