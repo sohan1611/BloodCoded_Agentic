@@ -183,16 +183,16 @@ export function Shell({
           <div className="brand">
             <img
               className="cogniflow-logo cogniflow-logo-light"
-              src="/brand/cogniflow-logo-light.jpg"
-              width={202}
-              height={184}
+              src="/brand/cogniflow-icon-light.png"
+              width={158}
+              height={132}
               alt="CogniFlow"
             />
             <img
               className="cogniflow-logo cogniflow-logo-dark"
-              src="/brand/cogniflow-logo-dark.jpg"
-              width={204}
-              height={186}
+              src="/brand/cogniflow-icon-dark.png"
+              width={158}
+              height={135}
               alt="CogniFlow"
             />
             <div className="brand-copy">
