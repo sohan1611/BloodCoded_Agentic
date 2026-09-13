@@ -1982,7 +1982,7 @@ code {
   }
 
   .shell {
-    max-width: 1420px;
+    max-width: none;
     min-height: 0;
     margin: 0 auto;
     background: var(--shell);
@@ -2083,6 +2083,9 @@ code {
     border-radius: 22px;
     padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
+    /* The reading measure lives here now, not on the shell. */
+    max-width: 1420px;
+    margin: 0 auto;
   }
 
   .bottom-nav { display: none; }
@@ -2801,7 +2804,7 @@ code {
 
 @media (prefers-color-scheme: dark) and (min-width: 768px) {
   :root:not([data-theme="light"]) .shell {
-    max-width: 1420px;
+    max-width: none;
     background: var(--shell);
     padding: 0;
   }
@@ -2813,6 +2816,9 @@ code {
     border-radius: 22px;
     padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
+    /* The reading measure lives here now, not on the shell. */
+    max-width: 1420px;
+    margin: 0 auto;
   }
   :root:not([data-theme="light"]) .nav {
     background: var(--chrome-subtle);
@@ -2833,7 +2839,7 @@ code {
 
 @media (min-width: 768px) {
   :root[data-theme="dark"] .shell {
-    max-width: 1420px;
+    max-width: none;
     background: var(--shell);
     padding: 0;
   }
@@ -2845,6 +2851,9 @@ code {
     border-radius: 22px;
     padding: 30px var(--app-gutter) 36px;
     min-height: 74vh;
+    /* The reading measure lives here now, not on the shell. */
+    max-width: 1420px;
+    margin: 0 auto;
   }
   :root[data-theme="dark"] .nav {
     background: var(--chrome-subtle);
