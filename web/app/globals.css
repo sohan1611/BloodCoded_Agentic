@@ -1962,7 +1962,7 @@ code {
     background: var(--body-bg);
     color: var(--ink);
     font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-    padding: 26px;
+    padding: 0;
   }
 
   .shell {
@@ -1970,9 +1970,7 @@ code {
     min-height: 0;
     margin: 0 auto;
     background: var(--shell);
-    border-radius: var(--r-lg);
-    padding: 10px;
-    box-shadow: 0 30px 80px rgba(10, 12, 20, .28);
+    padding: 0;
   }
 
   .topbar {
@@ -1982,7 +1980,7 @@ code {
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 12px 18px 20px;
+    padding: 12px 18px 20px 0;
     background: transparent;
     border-bottom: 0;
     backdrop-filter: none;
@@ -2789,12 +2787,10 @@ code {
   :root:not([data-theme="light"]) .shell {
     max-width: 1420px;
     background: var(--shell);
-    border-radius: var(--r-lg);
-    padding: 10px;
-    box-shadow: 0 30px 80px rgba(10, 12, 20, .28);
+    padding: 0;
   }
   :root:not([data-theme="light"]) .topbar {
-    padding: 12px 18px 20px;
+    padding: 12px 18px 20px 0;
   }
   :root:not([data-theme="light"]) .plate {
     background: var(--plate);
@@ -2823,12 +2819,10 @@ code {
   :root[data-theme="dark"] .shell {
     max-width: 1420px;
     background: var(--shell);
-    border-radius: var(--r-lg);
-    padding: 10px;
-    box-shadow: 0 30px 80px rgba(10, 12, 20, .28);
+    padding: 0;
   }
   :root[data-theme="dark"] .topbar {
-    padding: 12px 18px 20px;
+    padding: 12px 18px 20px 0;
   }
   :root[data-theme="dark"] .plate {
     background: var(--plate);
@@ -3134,7 +3128,10 @@ code {
 
 @media (min-width: 768px) {
   .auth-page {
-    min-height: calc(100dvh - 52px);
+    /* Was calc(100dvh - 52px), which subtracted the 26px body padding this breakpoint
+       used to add on each side. That padding is gone now that the app meets the viewport
+       edge, so the subtraction left the sign-in screen 52px short of the fold. */
+    min-height: 100dvh;
   }
 
   .who {
