@@ -12,36 +12,26 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { clearCachedJwt, type Health } from "@/lib/api";
-import { authClient } from "@/lib/auth/client";
-import { engineCopy, type EngineStatus } from "@/lib/engine";
+import { useCallback, useRef, useState } from "react";
+import { type EngineStatus } from "@/lib/engine";
 import { isPlainLeftClick } from "@/lib/home";
+import { AccountHub, ProfileButton } from "./account-hub";
+import type { SettingsSection } from "./settings";
 
 /** Kept in step with the .glass-sweep animation in globals.css. */
 const SWEEP_MS = 620;
 
 /** "detail" is deliberately NOT in TABS. It is the tutor's own working notes -- the
  *  decision trail and its diagnoses -- which are written ABOUT a student rather than to
- *  them, so it is reachable from the More sheet and never occupies a bottom-bar slot a
+ *  them, so it is reachable from the account hub and never occupies a bottom-bar slot a
  *  learner has to walk past. */
 export type Tab = "plan" | "learn" | "progress" | "detail";
-type ThemeChoice = "light" | "dark" | "system";
 
 const TABS: { id: Tab; label: string; mobileLabel: string; icon: string }[] = [
   { id: "plan", label: "Learning Plan", mobileLabel: "Plan", icon: "◎" },
   { id: "learn", label: "Learn", mobileLabel: "Learn", icon: "✎" },
   { id: "progress", label: "Progress", mobileLabel: "Progress", icon: "◷" },
 ];
-const THEME_OPTIONS: ThemeChoice[] = ["light", "dark", "system"];
-const THEME_LABEL: Record<ThemeChoice, string> = {
-  light: "Light",
-  dark: "Dark",
-  system: "System",
-};
-
-type HealthWithCorpus = Health & { corpus?: unknown };
-
 /** Swap a view behind a sheet of glass. */
 export function useGlassSwap() {
   const [sweeping, setSweeping] = useState(false);
@@ -73,17 +63,20 @@ export function Shell({
   onTab,
   name,
   email,
+  image,
   identityPending,
   hasLearner,
   engine,
   children,
   sweeping,
   onHome,
+  onOpenSettings,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
   name: string;
   email: string;
+  image?: string | null;
   identityPending: boolean;
   hasLearner: boolean;
   engine: EngineStatus;
@@ -91,95 +84,37 @@ export function Shell({
   sweeping: boolean;
   /** Where a plain logo click goes inside the app; absent means an ordinary link. */
   onHome?: () => void;
+  onOpenSettings: (section: SettingsSection) => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
-  const [theme, setTheme] = useState<ThemeChoice>("system");
-  const [signingOut, setSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const [forceMobileHub, setForceMobileHub] = useState(false);
   const headerTriggerRef = useRef<HTMLButtonElement>(null);
   const bottomTriggerRef = useRef<HTMLButtonElement>(null);
   const dotTriggerRef = useRef<HTMLButtonElement>(null);
   const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const initials =
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((word) => word[0]?.toUpperCase())
-      .join("") || name[0]?.toUpperCase() || "";
   const hasTemplateNotice = engine.health?.generation === "deterministic-templates";
 
-  const openMore = (trigger: HTMLButtonElement | null) => {
+  const openMore = (trigger: HTMLButtonElement | null, forceMobile: boolean) => {
+    if (moreOpen && lastTriggerRef.current === trigger) {
+      setMoreOpen(false);
+      return;
+    }
     lastTriggerRef.current = trigger;
+    setForceMobileHub(forceMobile);
     setMoreOpen(true);
   };
 
-  const applyTheme = useCallback((next: ThemeChoice) => {
-    setTheme(next);
-    if (next === "system") {
-      document.documentElement.removeAttribute("data-theme");
-    } else {
-      document.documentElement.dataset.theme = next;
-    }
-    try {
-      localStorage.setItem("cogniflow-theme", next);
-    } catch {}
-  }, []);
-
-  const closeMore = useCallback(() => {
+  const closeMore = useCallback((returnFocus = false) => {
     setMoreOpen(false);
-    window.setTimeout(() => lastTriggerRef.current?.focus({ preventScroll: true }), 0);
-  }, []);
-
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("cogniflow-theme");
-      if (stored === "light" || stored === "dark" || stored === "system") {
-        setTheme(stored);
-        if (stored === "system") {
-          document.documentElement.removeAttribute("data-theme");
-        } else {
-          document.documentElement.dataset.theme = stored;
-        }
-      }
-    } catch {
-      const stamped = document.documentElement.dataset.theme;
-      setTheme(stamped === "light" || stamped === "dark" ? stamped : "system");
+    if (returnFocus) {
+      window.setTimeout(() => lastTriggerRef.current?.focus({ preventScroll: true }), 0);
     }
   }, []);
 
-  useEffect(() => {
-    if (!moreOpen) return;
-    window.setTimeout(() => dialogRef.current?.focus({ preventScroll: true }), 0);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMore();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeMore, moreOpen]);
-
-  const signOut = async () => {
-    setSigningOut(true);
-    setSignOutError(null);
-    try {
-      const result = await authClient.signOut();
-      if (result.error) {
-        setSignOutError(
-          result.error.status === 0 || result.error.status >= 500
-            ? "We couldn't reach the sign-in service. Please try again."
-            : "Something went wrong. Please try again.",
-        );
-        return;
-      }
-      clearCachedJwt();
-      window.location.assign("/auth/sign-in");
-    } catch {
-      setSignOutError("We couldn't reach the sign-in service. Please try again.");
-    } finally {
-      setSigningOut(false);
-    }
+  const selectTab = (next: Tab) => {
+    setMoreOpen(false);
+    onTab(next);
   };
 
   return (
@@ -197,6 +132,7 @@ export function Shell({
                 // reload; any other click keeps normal link behaviour (new tab, window).
                 if (onHome && isPlainLeftClick(event)) {
                   event.preventDefault();
+                  setMoreOpen(false);
                   onHome();
                 }
               }}
@@ -226,7 +162,8 @@ export function Shell({
                     aria-label="Built-in templates status"
                     aria-expanded={moreOpen}
                     aria-haspopup="dialog"
-                    onClick={() => openMore(dotTriggerRef.current)}
+                    aria-controls="account-hub"
+                    onClick={() => openMore(dotTriggerRef.current, true)}
                   >
                     <span aria-hidden />
                   </button>
@@ -241,7 +178,7 @@ export function Shell({
               <button
                 key={t.id}
                 aria-current={hasLearner && tab === t.id ? "page" : undefined}
-                onClick={() => onTab(t.id)}
+                onClick={() => selectTab(t.id)}
                 disabled={!hasLearner}
                 title={!hasLearner ? "Start learning first" : undefined}
               >
@@ -250,27 +187,34 @@ export function Shell({
             ))}
           </nav>
 
-          {identityPending ? (
-            <span className="who skeleton identity-skeleton" aria-hidden="true" />
-          ) : (
-            <button
-              ref={headerTriggerRef}
-              type="button"
-              className="who"
-              aria-label="Open learner and engine status"
-              aria-expanded={moreOpen}
-              aria-haspopup="dialog"
-              onClick={() => openMore(headerTriggerRef.current)}
-            >
-              <span className="avatar" aria-hidden>
-                {initials}
-              </span>
-              <span className="who-text">
-                <b>{name}</b>
-                <small>learner</small>
-              </span>
-            </button>
-          )}
+          <div className="who-anchor">
+            {identityPending ? (
+              <span className="who skeleton identity-skeleton" aria-hidden="true" />
+            ) : (
+              <ProfileButton
+                name={name}
+                email={email}
+                image={image}
+                open={moreOpen}
+                buttonRef={headerTriggerRef}
+                onClick={() => openMore(headerTriggerRef.current, false)}
+              />
+            )}
+            {moreOpen && (
+              <AccountHub
+                name={name}
+                email={email}
+                image={image}
+                hasLearner={hasLearner}
+                engine={engine}
+                forceMobile={forceMobileHub}
+                triggerRef={lastTriggerRef}
+                onClose={closeMore}
+                onOpenSettings={onOpenSettings}
+                onOpenDetail={() => selectTab("detail")}
+              />
+            )}
+          </div>
         </header>
 
         <div className="plate" style={{ viewTransitionName: "plate" }}>
@@ -284,7 +228,7 @@ export function Shell({
             key={t.id}
             type="button"
             aria-current={hasLearner && tab === t.id ? "page" : undefined}
-            onClick={() => onTab(t.id)}
+            onClick={() => selectTab(t.id)}
             disabled={!hasLearner}
             title={!hasLearner ? "Start learning first" : undefined}
           >
@@ -298,170 +242,14 @@ export function Shell({
           className={moreOpen ? "open" : undefined}
           aria-expanded={moreOpen}
           aria-haspopup="dialog"
-          onClick={() => openMore(bottomTriggerRef.current)}
+          aria-controls="account-hub"
+          onClick={() => openMore(bottomTriggerRef.current, true)}
         >
           <span aria-hidden>•••</span>
           More
         </button>
       </nav>
 
-      {moreOpen && (
-        <MoreSheet
-          dialogRef={dialogRef}
-          name={name}
-          email={email}
-          initials={initials}
-          hasLearner={hasLearner}
-          engine={engine}
-          theme={theme}
-          onClose={closeMore}
-          onSignOut={signOut}
-          signingOut={signingOut}
-          signOutError={signOutError}
-          onTheme={applyTheme}
-          onOpenDetail={() => {
-            if (!hasLearner) return;
-            closeMore();
-            onTab("detail");
-          }}
-        />
-      )}
     </>
-  );
-}
-
-function MoreSheet({
-  dialogRef,
-  name,
-  email,
-  initials,
-  hasLearner,
-  engine,
-  theme,
-  onClose,
-  onSignOut,
-  signingOut,
-  signOutError,
-  onTheme,
-  onOpenDetail,
-}: {
-  dialogRef: React.RefObject<HTMLDivElement | null>;
-  name: string;
-  email: string;
-  initials: string;
-  hasLearner: boolean;
-  engine: EngineStatus;
-  theme: ThemeChoice;
-  onClose: () => void;
-  onSignOut: () => void;
-  signingOut: boolean;
-  signOutError: string | null;
-  onTheme: (theme: ThemeChoice) => void;
-  onOpenDetail: () => void;
-}) {
-  const health = engine.health;
-  const copy = engineCopy(engine);
-  const languageLabels = (health?.languages ?? []).map((option) => option.label);
-  const runsText = languageLabels.length > 0 ? languageLabels.join(", ") : "Not reported";
-  const corpus =
-    health && typeof (health as HealthWithCorpus).corpus === "string"
-      ? String((health as HealthWithCorpus).corpus)
-      : null;
-
-  return (
-    <div className="more-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div
-        ref={dialogRef}
-        className="more-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="more-title"
-        tabIndex={-1}
-      >
-        <div className="sheet-head">
-          <h2 id="more-title">More</h2>
-          <button type="button" className="sheet-close" aria-label="Close more sheet" onClick={onClose}>
-            ×
-          </button>
-        </div>
-
-        <section className="more-section">
-          <div className="who-row">
-            <span className="avatar" aria-hidden>
-              {initials}
-            </span>
-            <div>
-              <h3>{name}</h3>
-              <p className="muted">{email}</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="more-section">
-          <button
-            type="button"
-            className="sheet-action"
-            onClick={onSignOut}
-            disabled={signingOut}
-          >
-            {signingOut ? "Signing out…" : "Sign out"}
-          </button>
-          {signOutError && <p className="err sheet-availability" role="alert">{signOutError}</p>}
-        </section>
-
-        <section className="more-section">
-          <h3>Appearance</h3>
-          <div className="theme-toggle" role="radiogroup" aria-label="Appearance">
-            {THEME_OPTIONS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                role="radio"
-                aria-checked={theme === option}
-                onClick={() => onTheme(option)}
-              >
-                {THEME_LABEL[option]}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="more-section">
-          <h3>Session detail</h3>
-          <p className="muted">
-            Every decision the tutor made this session, and the notes it wrote while
-            diagnosing your work.
-          </p>
-          <button
-            type="button"
-            className="sheet-action"
-            onClick={onOpenDetail}
-            disabled={!hasLearner}
-            title={!hasLearner ? "Start learning first" : undefined}
-          >
-            Open session detail
-          </button>
-          {!hasLearner && <p className="muted sheet-availability">Available once you&apos;ve started.</p>}
-        </section>
-
-        <section className="more-section">
-          <h3>Engine status</h3>
-          <p className="muted engine-copy-title">{copy.title}</p>
-          <p className="muted engine-copy-detail">{copy.detail}</p>
-          {engine.state === "online" && <p className="muted">Runs: {runsText}</p>}
-          {corpus && corpus !== "ready" && <p className="muted">Corpus: {corpus}</p>}
-          {engine.state === "offline" && (
-            <button
-              type="button"
-              className="btn engine-retry"
-              onClick={engine.retry}
-              disabled={engine.probeInFlight}
-            >
-              {engine.probeInFlight ? "Checking…" : "Try again now"}
-            </button>
-          )}
-        </section>
-      </div>
-    </div>
   );
 }

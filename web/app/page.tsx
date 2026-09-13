@@ -54,6 +54,9 @@ import {
 } from "./plan";
 import { Shell, type Tab, useGlassSwap } from "./shell";
 import { authClient } from "@/lib/auth/client";
+import { EDITOR_FONT_PX } from "@/lib/account";
+import { usePreferences } from "@/lib/preferences";
+import { SettingsView, type SettingsSection } from "./settings";
 
 type Stage = "resuming" | "welcome" | "diagnostic" | "app";
 
@@ -207,6 +210,7 @@ function dashboardFocus(plan: Plan, activeSkill: string | null) {
 export default function Page() {
   const [stage, setStage] = useState<Stage>("resuming");
   const [tab, setTab] = useState<Tab>("plan");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [language, setLanguage] = useState("");
   const [id, setId] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
@@ -232,6 +236,7 @@ export default function Page() {
 
   const { swap, sweeping } = useGlassSwap();
   const { data: accountSession, isPending: accountPending } = authClient.useSession();
+  const { editorTextSize } = usePreferences();
   const engine = useEngineStatus();
   const health = engine.health;
   const statusCopy = engineCopy(engine);
@@ -724,6 +729,7 @@ export default function Page() {
   };
 
   const changeTab = (next: Tab) => {
+    setSettingsSection(null);
     if (!id) return;
     const requestId = ++navigationId.current;
     setError(null);
@@ -763,6 +769,11 @@ export default function Page() {
     })();
   };
 
+  const goHome = () => {
+    setSettingsSection(null);
+    if (stage === "app") changeTab("plan");
+  };
+
   // -------------------------------------------------------------- render
   return (
     <Shell
@@ -770,12 +781,22 @@ export default function Page() {
       onTab={changeTab}
       name={displayName}
       email={accountEmail}
+      image={accountSession?.user.image ?? null}
       identityPending={accountPending || !displayName}
       hasLearner={stage === "diagnostic" || stage === "app"}
       engine={engine}
       sweeping={sweeping}
-      onHome={stage === "app" ? () => changeTab("plan") : undefined}
+      onHome={stage === "app" || settingsSection !== null ? goHome : undefined}
+      onOpenSettings={setSettingsSection}
     >
+      {settingsSection !== null && stage !== "resuming" ? (
+        <SettingsView
+          section={settingsSection}
+          onSectionChange={setSettingsSection}
+          onBack={() => setSettingsSection(null)}
+        />
+      ) : (
+        <>
       {(engine.state === "waking" || engine.state === "offline") && (
         <EngineStatusBanner status={engine} />
       )}
@@ -916,6 +937,7 @@ export default function Page() {
               ref={editorRef}
               invalid={submissionNotice !== null}
               describedBy={submissionNotice ? "submission-notice" : undefined}
+              fontSize={EDITOR_FONT_PX[editorTextSize]}
             />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={submitDiagnostic} disabled={actionBusy}>
@@ -1013,6 +1035,7 @@ export default function Page() {
               onRetryTurn={() => resumeTurn(false)}
               onCheckTurn={() => resumeTurn(true)}
               languages={languageOptions}
+              editorFontSize={EDITOR_FONT_PX[editorTextSize]}
             />
           )}
         </div>
@@ -1050,6 +1073,8 @@ export default function Page() {
             <UnavailableView name="progress" />
           )}
         </div>
+      )}
+        </>
       )}
     </Shell>
   );
@@ -1431,6 +1456,7 @@ function Learn({
   onRetryTurn,
   onCheckTurn,
   languages,
+  editorFontSize,
 }: {
   view: TutorView | null;
   code: string;
@@ -1446,6 +1472,7 @@ function Learn({
   onRetryTurn: () => void;
   onCheckTurn: () => void;
   languages: LanguageOption[];
+  editorFontSize: number;
 }) {
   if (!view) {
     return (
@@ -1549,6 +1576,7 @@ function Learn({
               ref={editorRef}
               invalid={submissionNotice !== null}
               describedBy={submissionNotice ? "submission-notice" : undefined}
+              fontSize={editorFontSize}
             />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" onClick={onSubmit} disabled={controlsBusy}>
