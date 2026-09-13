@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS attempt_log (
     outcome         TEXT NOT NULL,
     mastery_before  REAL NOT NULL,
     mastery_after   REAL NOT NULL,
+    weight          REAL NOT NULL DEFAULT 1.0,
+    attributed_from TEXT,
     created_at      TEXT NOT NULL
 );
 
@@ -116,6 +118,8 @@ POSTGRES_SCHEMA = (
         outcome         TEXT NOT NULL,
         mastery_before  DOUBLE PRECISION NOT NULL,
         mastery_after   DOUBLE PRECISION NOT NULL,
+        weight          DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        attributed_from TEXT,
         created_at      TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_attempt_student ON attempt_log(student_id, skill)",
@@ -129,6 +133,11 @@ POSTGRES_SCHEMA = (
     " agree_correct DOUBLE PRECISION NOT NULL DEFAULT 0",
     "ALTER TABLE skill_mastery ADD COLUMN IF NOT EXISTS"
     " agree_wrong DOUBLE PRECISION NOT NULL DEFAULT 0",
+    # Historical attempts were full-strength single-skill observations, so their
+    # truthful weight is 1.0 rather than zero.
+    "ALTER TABLE attempt_log ADD COLUMN IF NOT EXISTS"
+    " weight DOUBLE PRECISION NOT NULL DEFAULT 1.0",
+    "ALTER TABLE attempt_log ADD COLUMN IF NOT EXISTS attributed_from TEXT",
 )
 
 POOL_APPLICATION_NAME = "cogniflow-engine"
@@ -258,6 +267,18 @@ class StudentStore:
                 conn.execute(
                     f"ALTER TABLE skill_mastery ADD COLUMN {column} REAL NOT NULL DEFAULT 0"
                 )
+
+        attempt_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(attempt_log)")
+        }
+        # Historical attempts were full-strength single-skill observations, so their
+        # truthful weight is 1.0 rather than zero.
+        if "weight" not in attempt_columns:
+            conn.execute(
+                "ALTER TABLE attempt_log ADD COLUMN weight REAL NOT NULL DEFAULT 1.0"
+            )
+        if "attributed_from" not in attempt_columns:
+            conn.execute("ALTER TABLE attempt_log ADD COLUMN attributed_from TEXT")
 
     def _sql(self, query: str) -> str:
         """SQLite binds `?`, psycopg binds `%s`. Every query here is written once, for both."""
@@ -481,12 +502,14 @@ class StudentStore:
     ) -> None:
         """Record one mastery movement. Only ever called with student evidence."""
         with self._connect() as conn:
+            # `share` is deliberately omitted: it is recoverable as weight divided by
+            # the observation's full weight, and persisting both could let them disagree.
             conn.execute(
                 self._sql(
                     "INSERT INTO attempt_log"
                     " (student_id, session_id, skill, outcome, mastery_before,"
-                    "  mastery_after, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    "  mastery_after, weight, attributed_from, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ),
                 (
                     student_id,
@@ -495,6 +518,8 @@ class StudentStore:
                     str(update.outcome),
                     update.mastery_before,
                     update.mastery_after,
+                    update.weight,
+                    update.attributed_from,
                     _now(),
                 ),
             )

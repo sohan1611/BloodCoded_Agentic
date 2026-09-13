@@ -18,6 +18,7 @@ connection test terminates the engine's own pooled connections.
 from __future__ import annotations
 
 import os
+import sqlite3
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,7 +91,16 @@ def test_placeholders_are_translated_only_for_postgres(
 
 # -- behaviour: the same calls on both backends --------------------------------
 
-def _attempt(skill: str, outcome: StudentOutcome, before: float, after: float) -> SkillUpdate:
+def _attempt(
+    skill: str,
+    outcome: StudentOutcome,
+    before: float,
+    after: float,
+    *,
+    weight: float = 1.0,
+    share: float = 1.0,
+    attributed_from: str | None = None,
+) -> SkillUpdate:
     return SkillUpdate(
         skill=skill,
         mastery_before=before,
@@ -99,6 +109,9 @@ def _attempt(skill: str, outcome: StudentOutcome, before: float, after: float) -
         confidence_after=0.3,
         outcome=outcome,
         attempts_after=2,
+        weight=weight,
+        share=share,
+        attributed_from=attributed_from,
     )
 
 
@@ -165,6 +178,104 @@ def test_sqlite_round_trips_every_method(tmp_path: Path) -> None:
     assert seen["ids_ascend"] and seen["variables_attempts"] == 2
     assert seen["distinct"] == ["functions", "variables"]
     assert seen["counts"] == {"WRONG_ANSWER": 1, "CORRECT": 1}
+
+
+def test_attempt_round_trips_weight_and_attribution(tmp_path: Path) -> None:
+    store = StudentStore(tmp_path / "s.db")
+    store.log_attempt(
+        "ada",
+        "session-1",
+        _attempt(
+            "variables",
+            StudentOutcome.WRONG_ANSWER,
+            0.50,
+            0.44,
+            weight=0.6,
+            share=0.6,
+            attributed_from="loops",
+        ),
+    )
+
+    row = store.attempts_for("ada")[0]
+    assert row["weight"] == 0.6
+    assert row["attributed_from"] == "loops"
+    assert "share" not in row
+
+
+def test_attempt_without_attribution_keeps_its_weight(tmp_path: Path) -> None:
+    store = StudentStore(tmp_path / "s.db")
+    store.log_attempt(
+        "ada",
+        "session-1",
+        _attempt("loops", StudentOutcome.CORRECT, 0.50, 0.62, weight=0.75),
+    )
+
+    row = store.attempts_for("ada")[0]
+    assert row["weight"] == 0.75
+    assert row["attributed_from"] is None
+
+
+def test_old_sqlite_attempt_log_gains_attribution_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "old.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE attempt_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                skill TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                mastery_before REAL NOT NULL,
+                mastery_after REAL NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO attempt_log (
+                student_id, session_id, skill, outcome,
+                mastery_before, mastery_after, created_at
+            ) VALUES (
+                'legacy', 'session-old', 'variables', 'WRONG_ANSWER',
+                0.5, 0.4, '2026-01-01T00:00:00+00:00'
+            );
+            """
+        )
+
+    migrated = StudentStore(db_path)
+    row = migrated.attempts_for("legacy")[0]
+    migrated.close()
+
+    assert row["weight"] == 1.0
+    assert row["attributed_from"] is None
+
+
+def test_split_submission_records_why_the_prerequisite_moved(tmp_path: Path) -> None:
+    store = StudentStore(tmp_path / "s.db")
+    store.log_attempt(
+        "ada",
+        "submission-1",
+        _attempt(
+            "loops", StudentOutcome.WRONG_ANSWER, 0.70, 0.66, weight=0.4, share=0.4
+        ),
+    )
+    store.log_attempt(
+        "ada",
+        "submission-1",
+        _attempt(
+            "variables",
+            StudentOutcome.WRONG_ANSWER,
+            0.50,
+            0.44,
+            weight=0.6,
+            share=0.6,
+            attributed_from="loops",
+        ),
+    )
+
+    rows = store.attempts_for("ada")
+    assert [(row["skill"], row["weight"], row["attributed_from"]) for row in rows] == [
+        ("loops", 0.4, None),
+        ("variables", 0.6, "loops"),
+    ]
 
 
 @pytest.fixture

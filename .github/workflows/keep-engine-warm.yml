@@ -1,0 +1,52 @@
+# Keep the tutoring engine awake.
+#
+# The engine runs on Render's free tier, which suspends a service after 15 quiet minutes.
+# Waking it again was measured at 72 s and 166 s on the same day -- roughly 30 s of that
+# is uvicorn starting and indexing the corpus, the rest is the host scheduling a
+# container. A visitor who arrives cold waits that long staring at a banner, and the one
+# visitor we cannot afford to do that to is a judge following the submission link.
+#
+# Pinging /health every ten minutes keeps the instance resident, so the service is warm
+# whenever anybody opens it. Ten rather than fourteen leaves margin for GitHub's own
+# scheduling, which routinely runs cron minutes late under load and occasionally skips.
+#
+# ON CLAUDE.md RULE 1: this workflow authors nothing. It opens no pull request, pushes no
+# commit and adds no identity to the contributor list -- it makes one HTTP request and
+# exits. That is deliberate: RULE 1 forbids automation that commits, and a workflow that
+# needs write access to the repository does not belong here.
+
+name: Keep engine warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  # Also runnable by hand, which is what you want a minute before a live demo.
+  workflow_dispatch:
+
+# No repository access is needed to curl a public URL, so none is granted.
+permissions: {}
+
+concurrency:
+  # A late run must not pile up behind an earlier one; the newest ping is the only
+  # useful one.
+  group: keep-engine-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the engine
+        run: |
+          # --max-time 240 rather than curl's default: a cold start legitimately takes
+          # minutes, and timing out early would report a failure for a service that was
+          # about to answer.
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' \
+            --max-time 240 https://cogniflow-engine.onrender.com/health)
+          echo "HTTP $code"
+          cat /tmp/health.json || true
+          echo
+          # Fail loudly on anything but 200 so a genuinely broken engine shows up in the
+          # Actions tab rather than being silently pinged into the void.
+          test "$code" = "200"

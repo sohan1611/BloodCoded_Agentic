@@ -23,9 +23,15 @@ type EngineSnapshot = Omit<EngineStatus, "retry" | "reportUnreachable">;
 // The first probe gets a brief grace period so a healthy engine does not flash a
 // waking message during an ordinary connection.
 const CHECKING_GRACE_MS = 2_500;
-// Three minutes is about three times the measured cold start, leaving room for the
-// free tier's variable scheduling and interpreter startup time.
-const WAKE_WINDOW_MS = 180_000;
+// Six minutes. The old value was three, justified in this comment as "about three times
+// the measured cold start" -- but that multiple was computed against a cold start we no
+// longer have. Measured on the deployed free tier: uvicorn takes ~30 s from launch to
+// "corpus chunks indexed", and door-to-door waits of 72 s and 166 s were both observed on
+// the same day. At 180 s the window was barely 1.1x the worst case, so a perfectly
+// healthy engine that happened to boot slowly tipped the page into "Can't reach the
+// tutoring engine" while it was still starting -- telling a student it was broken when it
+// was merely slow, which is the worse of the two messages by far.
+const WAKE_WINDOW_MS = 360_000;
 // Five seconds between wake attempts gives the engine time to advance without
 // flooding it while it boots.
 const PROBE_INTERVAL_MS = 5_000;
@@ -51,7 +57,13 @@ export function engineCopy(status: Pick<EngineStatus, "state" | "health">) {
       return {
         title: "Waking the tutoring engine",
         detail:
-          "It sleeps after 15 quiet minutes and usually takes about a minute to come back. This page starts by itself once it answers.",
+          // Measured, not estimated. The engine alone takes ~30 s to boot (uvicorn start
+          // to "corpus chunks indexed"), and the host's container start sits on top of
+          // that: observed cold starts run 70 s to over 160 s. The old copy promised
+          // "about a minute", so a student watching a two-and-a-half minute wait was
+          // being told the app was late when it was behaving normally -- which reads as
+          // broken rather than slow.
+          "It sleeps after 15 quiet minutes, and waking it takes one to three minutes. This page starts by itself once it answers — you do not need to refresh.",
         startLabel: "Waking the engine…",
       };
     case "online":
